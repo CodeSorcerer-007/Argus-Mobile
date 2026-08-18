@@ -56,7 +56,7 @@ data class ContactDiscoveryResponse(
 )
 
 class ArgusApiClient(
-    private val getBaseUrl: () -> String = { "http://10.0.2.2:8080" },
+    private val getBaseUrl: () -> String = { "https://argus-backend-5cg3.onrender.com" },
     private val getAuthToken: () -> String?
 ) {
     private val client = OkHttpClient.Builder()

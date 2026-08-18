@@ -48,7 +48,7 @@ sealed interface WebSocketInboundEvent {
 }
 
 class ArgusWebSocketClient(
-    private val getWsUrl: () -> String = { "ws://10.0.2.2:8080/ws" },
+    private val getWsUrl: () -> String = { "wss://argus-backend-5cg3.onrender.com/ws" },
     private val getAuthToken: () -> String?,
     private val getDeviceId: () -> String?
 ) {

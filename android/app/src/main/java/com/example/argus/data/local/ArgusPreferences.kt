@@ -102,7 +102,7 @@ class ArgusPreferences(context: Context) {
     }
 
     fun getServerUrl(): String {
-        return prefs.getString("pref_server_url", "http://10.0.2.2:8080") ?: "http://10.0.2.2:8080"
+        return prefs.getString("pref_server_url", "https://argus-backend-5cg3.onrender.com") ?: "https://argus-backend-5cg3.onrender.com"
     }
 
     fun setServerUrl(url: String) {
