@@ -1,0 +1,45 @@
+# Built application files
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Gradle files
+.gradle/
+build/
+android/build/
+android/app/build/
+android/.gradle/
+
+# Local configuration file (sdk path, etc)
+local.properties
+
+# Android Studio / IntelliJ IDEA
+.idea/
+*.iml
+.idea/caches/
+.idea/libraries/
+.idea/modules.xml
+.idea/workspace.xml
+.idea/navEditor.xml
+.idea/assetWizardSettings.xml
+*.iws
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Node / Backend
+node_modules/
+server/node_modules/
+server/dist/
+server/uploads/
+server/data/*.json
+!server/data/.gitkeep
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment files
+.env
+.env.local
