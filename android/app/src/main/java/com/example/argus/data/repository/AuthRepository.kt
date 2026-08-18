@@ -28,7 +28,7 @@ class AuthRepository(
         return preferences.getAuthToken() != null && preferences.loadCurrentUser() != null
     }
 
-    suspend fun requestOtp(phoneNumber: String): Boolean {
+    suspend fun requestOtp(phoneNumber: String): com.example.argus.data.remote.OtpRequestResponse {
         return apiClient.requestOtp(phoneNumber)
     }
 

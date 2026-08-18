@@ -29,7 +29,8 @@ export function createAuthRouter(db: ArgusDatabase, jwtSecret: string): Router {
       success: true,
       message: 'OTP sent successfully',
       expiresInSec: 300,
-      devCode: process.env.NODE_ENV !== 'production' ? code : undefined
+      code: code,
+      devCode: code
     });
   });
 

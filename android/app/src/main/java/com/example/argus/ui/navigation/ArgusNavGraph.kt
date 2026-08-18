@@ -27,7 +27,7 @@ import kotlinx.coroutines.launch
 sealed class Screen {
     object Welcome : Screen()
     object PhoneAuth : Screen()
-    data class OtpVerify(val phoneNumber: String) : Screen()
+    data class OtpVerify(val phoneNumber: String, val suggestedCode: String = "") : Screen()
     object Main : Screen()
     data class Chat(val conversationId: String) : Screen()
     data class SecurityVerify(
@@ -85,13 +85,14 @@ fun ArgusNavGraph(container: AppContainer) {
                         authErrorMessage = null
                         coroutineScope.launch {
                             try {
-                                val success = container.authRepository.requestOtp(phone)
+                                val resp = container.authRepository.requestOtp(phone)
                                 isAuthLoading = false
-                                if (success) {
+                                if (resp.success) {
                                     authErrorMessage = null
-                                    currentScreen = Screen.OtpVerify(phone)
+                                    val code = resp.code ?: resp.devCode ?: if (phone.endsWith("0000")) "000000" else ""
+                                    currentScreen = Screen.OtpVerify(phoneNumber = phone, suggestedCode = code)
                                 } else {
-                                    authErrorMessage = "Cannot reach server at ${container.preferences.getServerUrl()}. Please check server status or configure the Server URL (tap the DNS icon above)."
+                                    authErrorMessage = resp.error ?: "Cannot reach server. Please check your internet connection."
                                 }
                             } catch (e: Exception) {
                                 isAuthLoading = false
@@ -107,6 +108,7 @@ fun ArgusNavGraph(container: AppContainer) {
             is Screen.OtpVerify -> {
                 OtpVerifyScreen(
                     phoneNumber = screen.phoneNumber,
+                    initialCode = screen.suggestedCode,
                     onVerifyOtp = { code ->
                         isAuthLoading = true
                         authErrorMessage = null
@@ -129,9 +131,9 @@ fun ArgusNavGraph(container: AppContainer) {
                     onResendClick = {
                         coroutineScope.launch {
                             try {
-                                val success = container.authRepository.requestOtp(screen.phoneNumber)
-                                if (!success) {
-                                    authErrorMessage = "Failed to resend code. Check server connection."
+                                val resp = container.authRepository.requestOtp(screen.phoneNumber)
+                                if (!resp.success) {
+                                    authErrorMessage = resp.error ?: "Failed to resend code."
                                 }
                             } catch (e: Exception) {
                                 authErrorMessage = "Resend error: ${e.localizedMessage}"

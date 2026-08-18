@@ -18,6 +18,16 @@ import java.io.IOException
 data class OtpRequestPayload(val phoneNumber: String)
 
 @Serializable
+data class OtpRequestResponse(
+    val success: Boolean,
+    val message: String? = null,
+    val expiresInSec: Int? = null,
+    val code: String? = null,
+    val devCode: String? = null,
+    val error: String? = null
+)
+
+@Serializable
 data class OtpVerifyPayload(
     val phoneNumber: String,
     val code: String,
@@ -71,7 +81,7 @@ class ArgusApiClient(
     private val baseUrl: String
         get() = getBaseUrl().trim().removeSuffix("/")
 
-    suspend fun requestOtp(phoneNumber: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun requestOtp(phoneNumber: String): OtpRequestResponse = withContext(Dispatchers.IO) {
         try {
             val payload = json.encodeToString(OtpRequestPayload(phoneNumber))
             val request = Request.Builder()
@@ -80,11 +90,12 @@ class ArgusApiClient(
                 .build()
 
             client.newCall(request).execute().use { response ->
-                response.isSuccessful
+                val body = response.body?.string() ?: return@withContext OtpRequestResponse(success = false, error = "Empty response")
+                json.decodeFromString<OtpRequestResponse>(body)
             }
         } catch (e: Exception) {
             android.util.Log.e("ArgusApiClient", "requestOtp failed: ${e.message}", e)
-            false
+            OtpRequestResponse(success = false, error = e.localizedMessage ?: "Connection error")
         }
     }
 

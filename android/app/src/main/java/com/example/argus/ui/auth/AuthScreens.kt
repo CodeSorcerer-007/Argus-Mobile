@@ -354,13 +354,14 @@ fun PhoneAuthScreen(
 @Composable
 fun OtpVerifyScreen(
     phoneNumber: String,
+    initialCode: String = "",
     onVerifyOtp: (String) -> Unit,
     onResendClick: () -> Unit,
     onBackClick: () -> Unit = {},
     isLoading: Boolean = false,
     errorMessage: String? = null
 ) {
-    var code by remember { mutableStateOf("") }
+    var code by remember(initialCode) { mutableStateOf(initialCode) }
     var countdown by remember { mutableStateOf(45) }
 
     LaunchedEffect(Unit) {
@@ -402,6 +403,32 @@ fun OtpVerifyScreen(
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary
             )
+
+            if (initialCode.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(EmeraldPrimary.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
+                        .border(1.dp, EmeraldPrimary.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                        .padding(12.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = EmeraldPrimary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Verification code received: $initialCode (auto-filled)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = EmeraldLight
+                        )
+                    }
+                }
+            }
 
             if (errorMessage != null) {
                 Spacer(modifier = Modifier.height(16.dp))
