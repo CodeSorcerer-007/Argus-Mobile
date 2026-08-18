@@ -35,6 +35,7 @@ server/node_modules/
 server/dist/
 server/uploads/
 server/data/*.json
+server/data_test_*/
 !server/data/.gitkeep
 npm-debug.log*
 yarn-debug.log*

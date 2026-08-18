@@ -56,22 +56,35 @@ data class ContactDiscoveryResponse(
 )
 
 class ArgusApiClient(
-    private val baseUrl: String = "http://10.0.2.2:8080", // Default to Android emulator host alias (or localhost)
+    private val getBaseUrl: () -> String = { "http://10.0.2.2:8080" },
     private val getAuthToken: () -> String?
 ) {
-    private val client = OkHttpClient.Builder().build()
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
+        .build()
     private val json = Json { ignoreUnknownKeys = true }
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
-    suspend fun requestOtp(phoneNumber: String): Boolean = withContext(Dispatchers.IO) {
-        val payload = json.encodeToString(OtpRequestPayload(phoneNumber))
-        val request = Request.Builder()
-            .url("$baseUrl/api/auth/request-otp")
-            .post(payload.toRequestBody(jsonMediaType))
-            .build()
+    private val baseUrl: String
+        get() = getBaseUrl().trim().removeSuffix("/")
 
-        client.newCall(request).execute().use { response ->
-            response.isSuccessful
+    suspend fun requestOtp(phoneNumber: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val payload = json.encodeToString(OtpRequestPayload(phoneNumber))
+            val request = Request.Builder()
+                .url("$baseUrl/api/auth/request-otp")
+                .post(payload.toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                response.isSuccessful
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusApiClient", "requestOtp failed: ${e.message}", e)
+            false
         }
     }
 
@@ -82,89 +95,114 @@ class ArgusApiClient(
         identityKeyBase64: String,
         displayName: String? = null
     ): AuthResponse = withContext(Dispatchers.IO) {
-        val payload = json.encodeToString(
-            OtpVerifyPayload(
-                phoneNumber = phoneNumber,
-                code = code,
-                deviceName = deviceName,
-                identityKeyBase64 = identityKeyBase64,
-                displayName = displayName
+        try {
+            val payload = json.encodeToString(
+                OtpVerifyPayload(
+                    phoneNumber = phoneNumber,
+                    code = code,
+                    deviceName = deviceName,
+                    identityKeyBase64 = identityKeyBase64,
+                    displayName = displayName
+                )
             )
-        )
-        val request = Request.Builder()
-            .url("$baseUrl/api/auth/verify-otp")
-            .post(payload.toRequestBody(jsonMediaType))
-            .build()
+            val request = Request.Builder()
+                .url("$baseUrl/api/auth/verify-otp")
+                .post(payload.toRequestBody(jsonMediaType))
+                .build()
 
-        client.newCall(request).execute().use { response ->
-            val body = response.body?.string() ?: error("Empty response")
-            json.decodeFromString<AuthResponse>(body)
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string() ?: return@withContext AuthResponse(success = false, error = "Empty server response")
+                json.decodeFromString<AuthResponse>(body)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusApiClient", "verifyOtp failed: ${e.message}", e)
+            AuthResponse(success = false, error = "Connection error: ${e.localizedMessage ?: e.javaClass.simpleName}")
         }
     }
 
     suspend fun publishPreKeyBundle(payload: PublishBundlePayload): Boolean = withContext(Dispatchers.IO) {
-        val token = getAuthToken() ?: return@withContext false
-        val jsonBody = json.encodeToString(payload)
-        val request = Request.Builder()
-            .url("$baseUrl/api/keys/publish-bundle")
-            .header("Authorization", "Bearer $token")
-            .post(jsonBody.toRequestBody(jsonMediaType))
-            .build()
+        try {
+            val token = getAuthToken() ?: return@withContext false
+            val jsonBody = json.encodeToString(payload)
+            val request = Request.Builder()
+                .url("$baseUrl/api/keys/publish-bundle")
+                .header("Authorization", "Bearer $token")
+                .post(jsonBody.toRequestBody(jsonMediaType))
+                .build()
 
-        client.newCall(request).execute().use { response ->
-            response.isSuccessful
+            client.newCall(request).execute().use { response ->
+                response.isSuccessful
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusApiClient", "publishPreKeyBundle failed: ${e.message}", e)
+            false
         }
     }
 
     suspend fun fetchTargetPreKeyBundle(targetUserId: String): PreKeyBundle? = withContext(Dispatchers.IO) {
-        val token = getAuthToken() ?: return@withContext null
-        val request = Request.Builder()
-            .url("$baseUrl/api/keys/bundle/$targetUserId")
-            .header("Authorization", "Bearer $token")
-            .get()
-            .build()
+        try {
+            val token = getAuthToken() ?: return@withContext null
+            val request = Request.Builder()
+                .url("$baseUrl/api/keys/bundle/$targetUserId")
+                .header("Authorization", "Bearer $token")
+                .get()
+                .build()
 
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return@withContext null
-            val body = response.body?.string() ?: return@withContext null
-            json.decodeFromString<PreKeyBundle>(body)
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val body = response.body?.string() ?: return@withContext null
+                json.decodeFromString<PreKeyBundle>(body)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusApiClient", "fetchTargetPreKeyBundle failed: ${e.message}", e)
+            null
         }
     }
 
     suspend fun discoverContacts(phoneHashes: List<String>): List<User> = withContext(Dispatchers.IO) {
-        val token = getAuthToken() ?: return@withContext emptyList()
-        val payload = "{\"phoneHashes\":${json.encodeToString(phoneHashes)}}"
-        val request = Request.Builder()
-            .url("$baseUrl/api/users/discover-contacts")
-            .header("Authorization", "Bearer $token")
-            .post(payload.toRequestBody(jsonMediaType))
-            .build()
+        try {
+            val token = getAuthToken() ?: return@withContext emptyList()
+            val payload = "{\"phoneHashes\":${json.encodeToString(phoneHashes)}}"
+            val request = Request.Builder()
+                .url("$baseUrl/api/users/discover-contacts")
+                .header("Authorization", "Bearer $token")
+                .post(payload.toRequestBody(jsonMediaType))
+                .build()
 
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return@withContext emptyList()
-            val body = response.body?.string() ?: return@withContext emptyList()
-            json.decodeFromString<ContactDiscoveryResponse>(body).contacts
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext emptyList()
+                val body = response.body?.string() ?: return@withContext emptyList()
+                json.decodeFromString<ContactDiscoveryResponse>(body).contacts
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusApiClient", "discoverContacts failed: ${e.message}", e)
+            emptyList()
         }
     }
 
     suspend fun uploadEncryptedMedia(file: File, mimeType: String): String? = withContext(Dispatchers.IO) {
-        val token = getAuthToken()
-        val requestBody = MultipartBody.Builder()
-            .setType(MultipartBody.FORM)
-            .addFormDataPart("file", file.name, file.asRequestBody(mimeType.toMediaType()))
-            .build()
+        try {
+            val token = getAuthToken()
+            val requestBody = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("file", file.name, file.asRequestBody(mimeType.toMediaType()))
+                .build()
 
-        val request = Request.Builder()
-            .url("$baseUrl/api/media/upload")
-            .apply { if (token != null) header("Authorization", "Bearer $token") }
-            .post(requestBody)
-            .build()
+            val request = Request.Builder()
+                .url("$baseUrl/api/media/upload")
+                .apply { if (token != null) header("Authorization", "Bearer $token") }
+                .post(requestBody)
+                .build()
 
-        client.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) return@withContext null
-            val body = response.body?.string() ?: return@withContext null
-            val respJson = json.decodeFromString<Map<String, kotlinx.serialization.json.JsonElement>>(body)
-            respJson["fileUrl"]?.toString()?.replace("\"", "")
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val body = response.body?.string() ?: return@withContext null
+                val respJson = json.decodeFromString<Map<String, kotlinx.serialization.json.JsonElement>>(body)
+                respJson["fileUrl"]?.toString()?.replace("\"", "")
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusApiClient", "uploadEncryptedMedia failed: ${e.message}", e)
+            null
         }
     }
 }

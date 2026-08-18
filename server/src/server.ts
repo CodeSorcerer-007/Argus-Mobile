@@ -73,11 +73,12 @@ export function startServer() {
 
   const wsManager = new ArgusWebSocketManager(server, db, JWT_SECRET);
 
-  server.listen(PORT, () => {
+  server.listen(PORT, '0.0.0.0', () => {
     console.log(`=========================================`);
     console.log(`  Argus E2EE Backend Server Running      `);
-    console.log(`  HTTP API:  http://localhost:${PORT}   `);
-    console.log(`  WebSocket: ws://localhost:${PORT}/ws   `);
+    console.log(`  HTTP API:  http://0.0.0.0:${PORT}      `);
+    console.log(`  WebSocket: ws://0.0.0.0:${PORT}/ws     `);
+    console.log(`  Health:    http://0.0.0.0:${PORT}/health`);
     console.log(`=========================================`);
   });
 

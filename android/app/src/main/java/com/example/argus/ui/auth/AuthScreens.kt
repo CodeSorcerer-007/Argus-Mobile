@@ -167,10 +167,81 @@ private fun FeatureRow(
 
 @Composable
 fun PhoneAuthScreen(
+    currentServerUrl: String,
+    onSaveServerUrl: (String) -> Unit,
     onRequestOtp: (String) -> Unit,
-    isLoading: Boolean = false
+    isLoading: Boolean = false,
+    errorMessage: String? = null
 ) {
     var phoneNumber by remember { mutableStateOf("+1 555 ") }
+    var showServerDialog by remember { mutableStateOf(false) }
+    var tempServerUrl by remember(currentServerUrl) { mutableStateOf(currentServerUrl) }
+
+    if (showServerDialog) {
+        AlertDialog(
+            onDismissRequest = { showServerDialog = false },
+            containerColor = ObsidianCard,
+            title = {
+                Text("Backend Server URL", color = TextPrimary, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column {
+                    Text(
+                        "Set the HTTP(S) endpoint of your Argus backend server (e.g. Render Cloud URL or local IP):",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    OutlinedTextField(
+                        value = tempServerUrl,
+                        onValueChange = { tempServerUrl = it },
+                        label = { Text("Server URL") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = EmeraldPrimary,
+                            unfocusedBorderColor = ObsidianBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary,
+                            focusedContainerColor = ObsidianSurface,
+                            unfocusedContainerColor = ObsidianSurface
+                        )
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(
+                            onClick = { tempServerUrl = "http://10.0.2.2:8080" },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Text("Emulator", fontSize = 12.sp, color = EmeraldLight)
+                        }
+                        TextButton(
+                            onClick = { tempServerUrl = "http://localhost:8080" },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Text("Localhost", fontSize = 12.sp, color = EmeraldLight)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onSaveServerUrl(tempServerUrl)
+                        showServerDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary)
+                ) {
+                    Text("Save", color = ObsidianBlack, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showServerDialog = false }) {
+                    Text("Cancel", color = TextSecondary)
+                }
+            }
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -182,12 +253,28 @@ fun PhoneAuthScreen(
         verticalArrangement = Arrangement.SpaceBetween
     ) {
         Column {
-            Text(
-                text = "Enter your phone number",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                color = TextPrimary
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Sign In / Register",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = TextPrimary
+                )
+                IconButton(
+                    onClick = { showServerDialog = true }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Dns,
+                        contentDescription = "Server Settings",
+                        tint = EmeraldPrimary
+                    )
+                }
+            }
+
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = "Argus will send a verification code to register your cryptographic device key.",
@@ -195,7 +282,33 @@ fun PhoneAuthScreen(
                 color = TextSecondary
             )
 
-            Spacer(modifier = Modifier.height(32.dp))
+            if (errorMessage != null) {
+                Spacer(modifier = Modifier.height(16.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF3B1818), RoundedCornerShape(12.dp))
+                        .border(1.dp, Color(0xFF8B2525), RoundedCornerShape(12.dp))
+                        .padding(12.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.ErrorOutline,
+                            contentDescription = null,
+                            tint = Color(0xFFFF6B6B),
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = errorMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFFFFD1D1)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
 
             OutlinedTextField(
                 value = phoneNumber,
@@ -243,7 +356,9 @@ fun OtpVerifyScreen(
     phoneNumber: String,
     onVerifyOtp: (String) -> Unit,
     onResendClick: () -> Unit,
-    isLoading: Boolean = false
+    onBackClick: () -> Unit = {},
+    isLoading: Boolean = false,
+    errorMessage: String? = null
 ) {
     var code by remember { mutableStateOf("") }
     var countdown by remember { mutableStateOf(45) }
@@ -265,12 +380,22 @@ fun OtpVerifyScreen(
         verticalArrangement = Arrangement.SpaceBetween
     ) {
         Column {
-            Text(
-                text = "Verification Code",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                color = TextPrimary
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = onBackClick) {
+                    Icon(imageVector = Icons.Default.ArrowBack, contentDescription = "Back", tint = TextPrimary)
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Verification Code",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = TextPrimary
+                )
+            }
+
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = "We sent a 6-digit code to $phoneNumber",
@@ -278,7 +403,33 @@ fun OtpVerifyScreen(
                 color = TextSecondary
             )
 
-            Spacer(modifier = Modifier.height(32.dp))
+            if (errorMessage != null) {
+                Spacer(modifier = Modifier.height(16.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF3B1818), RoundedCornerShape(12.dp))
+                        .border(1.dp, Color(0xFF8B2525), RoundedCornerShape(12.dp))
+                        .padding(12.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.ErrorOutline,
+                            contentDescription = null,
+                            tint = Color(0xFFFF6B6B),
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = errorMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFFFFD1D1)
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(24.dp))
 
             OutlinedTextField(
                 value = code,

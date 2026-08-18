@@ -127,8 +127,80 @@ fun SettingsScreen(
                 }
             )
 
-            // Storage & Data Group
+            // Storage & Network Group
             SettingsSectionHeader("Storage & Network")
+            var showServerUrlDialog by remember { mutableStateOf(false) }
+            var currentServerUrl by remember { mutableStateOf(preferences.getServerUrl()) }
+            var tempServerUrl by remember(currentServerUrl) { mutableStateOf(currentServerUrl) }
+
+            if (showServerUrlDialog) {
+                AlertDialog(
+                    onDismissRequest = { showServerUrlDialog = false },
+                    containerColor = ObsidianCard,
+                    title = { Text("Backend Server URL", color = TextPrimary, fontWeight = FontWeight.Bold) },
+                    text = {
+                        Column {
+                            Text(
+                                "Configure the endpoint for Argus E2EE Gateway (Render Cloud URL, Local IP, or Emulator):",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            OutlinedTextField(
+                                value = tempServerUrl,
+                                onValueChange = { tempServerUrl = it },
+                                label = { Text("Server URL") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = EmeraldPrimary,
+                                    unfocusedBorderColor = ObsidianBorder,
+                                    focusedTextColor = TextPrimary,
+                                    unfocusedTextColor = TextPrimary,
+                                    focusedContainerColor = ObsidianSurface,
+                                    unfocusedContainerColor = ObsidianSurface
+                                )
+                            )
+                        }
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                preferences.setServerUrl(tempServerUrl)
+                                currentServerUrl = preferences.getServerUrl()
+                                showServerUrlDialog = false
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary)
+                        ) {
+                            Text("Save", color = ObsidianBlack, fontWeight = FontWeight.Bold)
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showServerUrlDialog = false }) {
+                            Text("Cancel", color = TextSecondary)
+                        }
+                    }
+                )
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(ObsidianCard)
+                    .clickable { showServerUrlDialog = true }
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(imageVector = Icons.Default.Dns, contentDescription = null, tint = EmeraldPrimary, modifier = Modifier.size(24.dp))
+                Spacer(modifier = Modifier.width(14.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(text = "Backend Server URL", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
+                    Text(text = currentServerUrl, style = MaterialTheme.typography.labelSmall, color = EmeraldLight)
+                }
+                Icon(imageVector = Icons.Default.ChevronRight, contentDescription = null, tint = TextMuted)
+            }
+
             SettingsToggleRow(
                 icon = Icons.Default.DataSaverOn,
                 title = "Travel / Low-Data Mode",

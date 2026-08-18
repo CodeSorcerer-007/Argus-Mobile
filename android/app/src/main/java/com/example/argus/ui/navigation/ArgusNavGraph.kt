@@ -59,6 +59,7 @@ fun ArgusNavGraph(container: AppContainer) {
     val activeCallState by container.callRepository.activeCallFlow.collectAsState()
 
     var isAuthLoading by remember { mutableStateOf(false) }
+    var authErrorMessage by remember { mutableStateOf<String?>(null) }
 
     Box(
         modifier = Modifier
@@ -74,15 +75,32 @@ fun ArgusNavGraph(container: AppContainer) {
 
             is Screen.PhoneAuth -> {
                 PhoneAuthScreen(
+                    currentServerUrl = container.preferences.getServerUrl(),
+                    onSaveServerUrl = { newUrl ->
+                        container.preferences.setServerUrl(newUrl)
+                        authErrorMessage = null
+                    },
                     onRequestOtp = { phone ->
                         isAuthLoading = true
+                        authErrorMessage = null
                         coroutineScope.launch {
-                            container.authRepository.requestOtp(phone)
-                            isAuthLoading = false
-                            currentScreen = Screen.OtpVerify(phone)
+                            try {
+                                val success = container.authRepository.requestOtp(phone)
+                                isAuthLoading = false
+                                if (success) {
+                                    authErrorMessage = null
+                                    currentScreen = Screen.OtpVerify(phone)
+                                } else {
+                                    authErrorMessage = "Cannot reach server at ${container.preferences.getServerUrl()}. Please check server status or configure the Server URL (tap the DNS icon above)."
+                                }
+                            } catch (e: Exception) {
+                                isAuthLoading = false
+                                authErrorMessage = "Connection failed: ${e.localizedMessage ?: "Unknown network error"}"
+                            }
                         }
                     },
-                    isLoading = isAuthLoading
+                    isLoading = isAuthLoading,
+                    errorMessage = authErrorMessage
                 )
             }
 
@@ -91,20 +109,41 @@ fun ArgusNavGraph(container: AppContainer) {
                     phoneNumber = screen.phoneNumber,
                     onVerifyOtp = { code ->
                         isAuthLoading = true
+                        authErrorMessage = null
                         coroutineScope.launch {
-                            val result = container.authRepository.verifyOtp(screen.phoneNumber, code)
-                            isAuthLoading = false
-                            if (result.isSuccess) {
-                                currentScreen = Screen.Main
+                            try {
+                                val result = container.authRepository.verifyOtp(screen.phoneNumber, code)
+                                isAuthLoading = false
+                                if (result.isSuccess) {
+                                    authErrorMessage = null
+                                    currentScreen = Screen.Main
+                                } else {
+                                    authErrorMessage = result.exceptionOrNull()?.localizedMessage ?: "Verification failed. Check the code."
+                                }
+                            } catch (e: Exception) {
+                                isAuthLoading = false
+                                authErrorMessage = "Authentication error: ${e.localizedMessage}"
                             }
                         }
                     },
                     onResendClick = {
                         coroutineScope.launch {
-                            container.authRepository.requestOtp(screen.phoneNumber)
+                            try {
+                                val success = container.authRepository.requestOtp(screen.phoneNumber)
+                                if (!success) {
+                                    authErrorMessage = "Failed to resend code. Check server connection."
+                                }
+                            } catch (e: Exception) {
+                                authErrorMessage = "Resend error: ${e.localizedMessage}"
+                            }
                         }
                     },
-                    isLoading = isAuthLoading
+                    onBackClick = {
+                        authErrorMessage = null
+                        currentScreen = Screen.PhoneAuth
+                    },
+                    isLoading = isAuthLoading,
+                    errorMessage = authErrorMessage
                 )
             }
 

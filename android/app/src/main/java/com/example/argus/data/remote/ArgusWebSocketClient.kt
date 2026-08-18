@@ -48,7 +48,7 @@ sealed interface WebSocketInboundEvent {
 }
 
 class ArgusWebSocketClient(
-    private val wsUrl: String = "ws://10.0.2.2:8080/ws",
+    private val getWsUrl: () -> String = { "ws://10.0.2.2:8080/ws" },
     private val getAuthToken: () -> String?,
     private val getDeviceId: () -> String?
 ) {
@@ -75,7 +75,8 @@ class ArgusWebSocketClient(
         val token = getAuthToken() ?: return
         shouldReconnect = true
 
-        val request = Request.Builder().url(wsUrl).build()
+        val currentWsUrl = getWsUrl()
+        val request = Request.Builder().url(currentWsUrl).build()
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 Log.d(TAG, "WebSocket connected, sending AUTH")

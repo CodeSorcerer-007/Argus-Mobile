@@ -13,10 +13,12 @@ class AppContainer(private val context: Context) {
     val localStore = ArgusLocalStore(context)
 
     val apiClient = ArgusApiClient(
+        getBaseUrl = { preferences.getServerUrl() },
         getAuthToken = { preferences.getAuthToken() }
     )
 
     val webSocketClient = ArgusWebSocketClient(
+        getWsUrl = { preferences.getWebSocketUrl() },
         getAuthToken = { preferences.getAuthToken() },
         getDeviceId = { preferences.getDeviceId() }
     )

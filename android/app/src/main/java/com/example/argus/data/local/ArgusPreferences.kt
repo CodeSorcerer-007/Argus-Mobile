@@ -101,6 +101,26 @@ class ArgusPreferences(context: Context) {
         prefs.edit().putString("signed_pre_key_pair", jsonStr).apply()
     }
 
+    fun getServerUrl(): String {
+        return prefs.getString("pref_server_url", "http://10.0.2.2:8080") ?: "http://10.0.2.2:8080"
+    }
+
+    fun setServerUrl(url: String) {
+        val trimmed = url.trim().removeSuffix("/")
+        prefs.edit().putString("pref_server_url", trimmed).apply()
+    }
+
+    fun getWebSocketUrl(): String {
+        val httpUrl = getServerUrl()
+        return if (httpUrl.startsWith("https://")) {
+            httpUrl.replaceFirst("https://", "wss://") + "/ws"
+        } else if (httpUrl.startsWith("http://")) {
+            httpUrl.replaceFirst("http://", "ws://") + "/ws"
+        } else {
+            "ws://$httpUrl/ws"
+        }
+    }
+
     fun clearAll() {
         prefs.edit().clear().apply()
         _currentUserFlow.value = null
