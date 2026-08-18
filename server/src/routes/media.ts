@@ -4,32 +4,45 @@ import path from 'path';
 import multer from 'multer';
 import { v4 as uuidv4 } from 'uuid';
 
+const ALLOWED_EXTENSIONS = new Set([
+  '.enc', '.bin', '.dat', '.jpg', '.jpeg', '.png', '.webp', '.gif',
+  '.mp4', '.mov', '.webm', '.aac', '.m4a', '.mp3', '.ogg', '.opus', '.wav',
+  '.pdf', '.txt', '.doc', '.docx', '.blob'
+]);
+
 export function createMediaRouter(uploadDir: string = './uploads'): Router {
   const router = Router();
+  const absoluteUploadDir = path.resolve(uploadDir);
 
-  if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
+  if (!fs.existsSync(absoluteUploadDir)) {
+    fs.mkdirSync(absoluteUploadDir, { recursive: true });
   }
 
   const storage = multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, uploadDir),
+    destination: (_req, _file, cb) => cb(null, absoluteUploadDir),
     filename: (_req, file, cb) => {
-      const ext = path.extname(file.originalname);
+      let ext = path.extname(file.originalname).toLowerCase();
+      if (!ALLOWED_EXTENSIONS.has(ext)) {
+        ext = '.bin'; // default to safe binary blob
+      }
       cb(null, `${uuidv4()}${ext}`);
     }
   });
 
   const upload = multer({
     storage,
-    limits: { fileSize: 500 * 1024 * 1024 } // 500MB max per attachment
+    limits: {
+      fileSize: 100 * 1024 * 1024, // 100MB max per attachment
+      files: 1
+    }
   });
 
   /**
-   * Upload encrypted media blob
+   * Upload encrypted media blob (Authenticated)
    */
   router.post('/upload', upload.single('file'), (req: Request, res: Response): void => {
     if (!req.file) {
-      res.status(400).json({ error: 'File is required' });
+      res.status(400).json({ error: 'Valid file attachment is required' });
       return;
     }
 
@@ -39,7 +52,7 @@ export function createMediaRouter(uploadDir: string = './uploads'): Router {
       fileId: req.file.filename,
       fileUrl,
       sizeBytes: req.file.size,
-      mimeType: req.file.mimetype
+      mimeType: req.file.mimetype || 'application/octet-stream'
     });
   });
 
@@ -49,16 +62,24 @@ export function createMediaRouter(uploadDir: string = './uploads'): Router {
   router.get('/download/:filename', (req: Request, res: Response): void => {
     const filename = req.params.filename as string;
     const safeFilename = path.basename(filename);
-    const filePath = path.join(uploadDir, safeFilename);
+    const filePath = path.resolve(absoluteUploadDir, safeFilename);
+
+    // Path traversal defense
+    if (!filePath.startsWith(absoluteUploadDir)) {
+      res.status(403).json({ error: 'Access denied' });
+      return;
+    }
 
     if (!fs.existsSync(filePath)) {
-      res.status(404).json({ error: 'File not found' });
+      res.status(404).json({ error: 'Requested media not found' });
       return;
     }
 
     const stat = fs.statSync(filePath);
     const fileSize = stat.size;
     const range = req.headers.range;
+
+    res.setHeader('X-Content-Type-Options', 'nosniff');
 
     if (range) {
       const parts = range.replace(/bytes=/, '').split('-');

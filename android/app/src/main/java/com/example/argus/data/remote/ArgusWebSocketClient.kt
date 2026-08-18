@@ -70,6 +70,8 @@ class ArgusWebSocketClient(
     val inboundEvents: SharedFlow<WebSocketInboundEvent> = _inboundEvents.asSharedFlow()
 
     private var shouldReconnect = true
+    private var reconnectAttempt = 0
+    private var reconnectJob: kotlinx.coroutines.Job? = null
 
     fun connect() {
         val token = getAuthToken() ?: return
@@ -81,6 +83,8 @@ class ArgusWebSocketClient(
             override fun onOpen(ws: WebSocket, response: Response) {
                 Log.d(TAG, "WebSocket connected, sending AUTH")
                 _connectionState.value = true
+                reconnectAttempt = 0
+                reconnectJob?.cancel()
                 val authPayload = """{"type":"AUTH","token":"$token","deviceId":"${getDeviceId() ?: "android_1"}"}"""
                 ws.send(authPayload)
             }
@@ -108,9 +112,13 @@ class ArgusWebSocketClient(
 
     private fun scheduleReconnect() {
         if (!shouldReconnect) return
-        scope.launch {
-            delay(3000)
-            if (getAuthToken() != null) {
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            val backoffMs = (1000L * (1 shl minOf(reconnectAttempt, 5))) + (0..1000).random()
+            reconnectAttempt++
+            Log.d(TAG, "Reconnecting WebSocket in ${backoffMs}ms (attempt $reconnectAttempt)")
+            delay(backoffMs)
+            if (shouldReconnect && getAuthToken() != null) {
                 connect()
             }
         }
@@ -118,6 +126,7 @@ class ArgusWebSocketClient(
 
     fun disconnect() {
         shouldReconnect = false
+        reconnectJob?.cancel()
         webSocket?.close(1000, "Client closed")
         webSocket = null
         _connectionState.value = false

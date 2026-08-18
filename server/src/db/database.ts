@@ -3,6 +3,13 @@ import path from 'path';
 import crypto from 'crypto';
 import { User, Device, StoredPreKeyBundle, EncryptedMessagePayload, Group, CallSession } from '../types';
 
+export interface RefreshTokenRecord {
+  token: string;
+  userId: string;
+  deviceId: string;
+  expiresAt: number;
+}
+
 export class ArgusDatabase {
   private dataDir: string;
   private usersFile: string;
@@ -10,7 +17,7 @@ export class ArgusDatabase {
   private keysFile: string;
   private messagesFile: string;
   private groupsFile: string;
-  private otpsFile: string;
+  private tokensFile: string;
 
   public users: Map<string, User> = new Map();
   public devices: Map<string, Device> = new Map();
@@ -19,6 +26,9 @@ export class ArgusDatabase {
   public groups: Map<string, Group> = new Map();
   public otps: Map<string, { code: string; expiresAt: number; phoneHash: string }> = new Map();
   public activeCalls: Map<string, CallSession> = new Map();
+  public refreshTokens: Map<string, RefreshTokenRecord> = new Map();
+  public revokedTokens: Set<string> = new Set();
+  public failedOtpAttempts: Map<string, { count: number; lockedUntil: number }> = new Map();
 
   constructor(dataDir: string = './data') {
     this.dataDir = dataDir;
@@ -30,13 +40,19 @@ export class ArgusDatabase {
     this.keysFile = path.join(this.dataDir, 'keys.json');
     this.messagesFile = path.join(this.dataDir, 'messages.json');
     this.groupsFile = path.join(this.dataDir, 'groups.json');
-    this.otpsFile = path.join(this.dataDir, 'otps.json');
+    this.tokensFile = path.join(this.dataDir, 'tokens.json');
 
     this.load();
   }
 
   public hashPhone(phoneNumber: string): string {
     return crypto.createHash('sha256').update(`Argus_Salt_2026:${phoneNumber.trim()}`).digest('hex');
+  }
+
+  private safeAtomicWrite(filePath: string, data: string): void {
+    const tmpPath = `${filePath}.${Date.now()}.${Math.random().toString(36).substring(2, 8)}.tmp`;
+    fs.writeFileSync(tmpPath, data, 'utf-8');
+    fs.renameSync(tmpPath, filePath);
   }
 
   public load(): void {
@@ -61,6 +77,15 @@ export class ArgusDatabase {
         const raw = JSON.parse(fs.readFileSync(this.groupsFile, 'utf-8'));
         Object.entries(raw).forEach(([k, v]) => this.groups.set(k, v as Group));
       }
+      if (fs.existsSync(this.tokensFile)) {
+        const raw = JSON.parse(fs.readFileSync(this.tokensFile, 'utf-8'));
+        if (raw.refreshTokens) {
+          Object.entries(raw.refreshTokens).forEach(([k, v]) => this.refreshTokens.set(k, v as RefreshTokenRecord));
+        }
+        if (Array.isArray(raw.revokedTokens)) {
+          this.revokedTokens = new Set(raw.revokedTokens);
+        }
+      }
     } catch (e) {
       console.warn('Database load initialized with fresh in-memory state');
     }
@@ -70,23 +95,31 @@ export class ArgusDatabase {
     try {
       const uObj: Record<string, User> = {};
       this.users.forEach((v, k) => (uObj[k] = v));
-      fs.writeFileSync(this.usersFile, JSON.stringify(uObj, null, 2));
+      this.safeAtomicWrite(this.usersFile, JSON.stringify(uObj, null, 2));
 
       const dObj: Record<string, Device> = {};
       this.devices.forEach((v, k) => (dObj[k] = v));
-      fs.writeFileSync(this.devicesFile, JSON.stringify(dObj, null, 2));
+      this.safeAtomicWrite(this.devicesFile, JSON.stringify(dObj, null, 2));
 
       const kObj: Record<string, StoredPreKeyBundle> = {};
       this.keyBundles.forEach((v, k) => (kObj[k] = v));
-      fs.writeFileSync(this.keysFile, JSON.stringify(kObj, null, 2));
+      this.safeAtomicWrite(this.keysFile, JSON.stringify(kObj, null, 2));
 
       const mObj: Record<string, EncryptedMessagePayload[]> = {};
       this.offlineMessages.forEach((v, k) => (mObj[k] = v));
-      fs.writeFileSync(this.messagesFile, JSON.stringify(mObj, null, 2));
+      this.safeAtomicWrite(this.messagesFile, JSON.stringify(mObj, null, 2));
 
       const gObj: Record<string, Group> = {};
       this.groups.forEach((v, k) => (gObj[k] = v));
-      fs.writeFileSync(this.groupsFile, JSON.stringify(gObj, null, 2));
+      this.safeAtomicWrite(this.groupsFile, JSON.stringify(gObj, null, 2));
+
+      const rObj: Record<string, RefreshTokenRecord> = {};
+      this.refreshTokens.forEach((v, k) => (rObj[k] = v));
+      const tokensPayload = {
+        refreshTokens: rObj,
+        revokedTokens: Array.from(this.revokedTokens)
+      };
+      this.safeAtomicWrite(this.tokensFile, JSON.stringify(tokensPayload, null, 2));
     } catch (e) {
       console.error('Failed to persist database to disk:', e);
     }

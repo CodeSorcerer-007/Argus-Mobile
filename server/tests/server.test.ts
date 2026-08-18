@@ -40,6 +40,7 @@ describe('Argus Backend Integration Tests', () => {
         phoneNumber: testPhone,
         code: otpRecord!.code,
         deviceName: 'Pixel 9 Pro',
+        identityKeyBase64: 'mockIdentityPublicKeyBase64',
         displayName: 'Test User'
       });
 

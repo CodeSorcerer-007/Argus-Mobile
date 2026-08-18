@@ -1,6 +1,8 @@
 import http from 'http';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
 import { ArgusDatabase } from './db/database';
@@ -21,9 +23,43 @@ const UPLOAD_DIR = process.env.UPLOAD_DIR || './uploads';
 export function createApp(db: ArgusDatabase) {
   const app = express();
 
-  app.use(cors());
+  // 1. Security Headers (Helmet)
+  app.use(helmet({
+    contentSecurityPolicy: false, // Mobile API focus
+    crossOriginResourcePolicy: { policy: 'cross-origin' }
+  }));
+
+  // 2. CORS Policy (Configured for Mobile Clients)
+  app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'Range']
+  }));
+
+  // 3. Body Parsers with strict bounds
   app.use(express.json({ limit: '10mb' }));
-  app.use(express.urlencoded({ extended: true }));
+  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+  // 4. Rate Limiting Middleware
+  const isTest = process.env.NODE_ENV === 'test';
+
+  const generalLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: isTest ? 10000 : 300,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests, please slow down.' }
+  });
+
+  const authRateLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: isTest ? 10000 : 15,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many authentication attempts. Please try again later.' }
+  });
+
+  app.use(generalLimiter);
 
   // Request logger
   app.use((req: Request, _res: Response, next: NextFunction) => {
@@ -33,9 +69,15 @@ export function createApp(db: ArgusDatabase) {
     next();
   });
 
-  // Health check
+  // Health check endpoint
   app.get('/health', (_req: Request, res: Response) => {
-    res.json({ status: 'ok', service: 'Argus E2EE Gateway', timestamp: Date.now() });
+    res.json({
+      status: 'ok',
+      service: 'Argus E2EE Gateway',
+      environment: process.env.NODE_ENV || 'development',
+      uptimeSec: Math.floor(process.uptime()),
+      timestamp: Date.now()
+    });
   });
 
   // Auth Middleware for protected endpoints
@@ -57,7 +99,7 @@ export function createApp(db: ArgusDatabase) {
   };
 
   // Mount API Routers
-  app.use('/api/auth', createAuthRouter(db, JWT_SECRET));
+  app.use('/api/auth', authRateLimiter, createAuthRouter(db, JWT_SECRET));
   app.use('/api/keys', authMiddleware, createKeysRouter(db));
   app.use('/api/users', authMiddleware, createUsersRouter(db));
   app.use('/api/groups', authMiddleware, createGroupsRouter(db));
@@ -75,12 +117,32 @@ export function startServer() {
 
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`=========================================`);
-    console.log(`  Argus E2EE Backend Server Running      `);
+    console.log(`  Argus E2EE Production Gateway Running  `);
     console.log(`  HTTP API:  http://0.0.0.0:${PORT}      `);
     console.log(`  WebSocket: ws://0.0.0.0:${PORT}/ws     `);
     console.log(`  Health:    http://0.0.0.0:${PORT}/health`);
     console.log(`=========================================`);
   });
+
+  // Graceful Shutdown on SIGTERM / SIGINT
+  const handleShutdown = (signal: string) => {
+    console.log(`Received ${signal}. Starting graceful shutdown...`);
+    db.save();
+
+    server.close(() => {
+      console.log('HTTP server closed.');
+      process.exit(0);
+    });
+
+    // Force exit after 10 seconds if connections hang
+    setTimeout(() => {
+      console.error('Could not close connections in time, forcefully shutting down');
+      process.exit(1);
+    }, 10000);
+  };
+
+  process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+  process.on('SIGINT', () => handleShutdown('SIGINT'));
 
   return { server, db, wsManager };
 }

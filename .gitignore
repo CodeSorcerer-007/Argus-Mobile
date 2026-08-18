@@ -38,6 +38,8 @@ server/data/*.json
 server/data_test_*/
 !server/data/.gitkeep
 npm-debug.log*
+resize_icons.ps1
+
 yarn-debug.log*
 yarn-error.log*
 
