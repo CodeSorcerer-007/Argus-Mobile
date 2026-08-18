@@ -1,6 +1,8 @@
-# Argus — Production-Grade Native Android Secure Messenger
-
-> *"Private communication, without compromise."*
+<div align="center">
+  <img src="Argus%20Logo.png" width="140" alt="Argus Logo" style="border-radius: 50%;" />
+  <h1>Argus — Production-Grade Native Android Secure Messenger</h1>
+  <p><em>"Private communication, without compromise."</em></p>
+</div>
 
 Argus is a production-grade, privacy-first native Android messaging platform that blends the simplicity and reliability of WhatsApp, the power and flexibility of Telegram, and the gold-standard cryptographic privacy of Signal, wrapped in a bespoke Obsidian & Emerald modern Material 3 aesthetic.
 

@@ -1,6 +1,7 @@
 package com.example.argus.ui.auth
 
 import androidx.compose.animation.*
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -16,11 +17,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.argus.R
 import com.example.argus.theme.*
 import com.example.argus.ui.components.ArgusButton
 import kotlinx.coroutines.delay
@@ -56,17 +59,18 @@ fun WelcomeScreen(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(100.dp)
+                        .size(110.dp)
                         .clip(CircleShape)
-                        .background(Brush.radialGradient(listOf(EmeraldPrimary.copy(alpha = 0.2f), Color.Transparent)))
-                        .border(2.dp, EmeraldPrimary, CircleShape),
+                        .background(Brush.radialGradient(listOf(EmeraldPrimary.copy(alpha = 0.25f), Color.Transparent)))
+                        .border(2.dp, EmeraldPrimary.copy(alpha = 0.8f), CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Shield,
+                    Image(
+                        painter = painterResource(id = R.drawable.argus_logo),
                         contentDescription = "Argus Logo",
-                        tint = EmeraldPrimary,
-                        modifier = Modifier.size(54.dp)
+                        modifier = Modifier
+                            .size(92.dp)
+                            .clip(CircleShape)
                     )
                 }
 
