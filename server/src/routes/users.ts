@@ -141,5 +141,22 @@ export function createUsersRouter(db: ArgusDatabase): Router {
     res.json({ contacts: matched });
   });
 
+  /**
+   * Register push notification device token (FCM)
+   */
+  router.post('/push-token', (req: Request, res: Response): void => {
+    const userId = (req as any).user?.userId;
+    const token = req.body.token;
+
+    if (!userId || !token || typeof token !== 'string') {
+      res.status(400).json({ error: 'Valid token is required' });
+      return;
+    }
+
+    const { notificationService } = require('../services/notificationService');
+    notificationService.registerToken(userId, token.trim());
+    res.json({ success: true, message: 'Push token registered' });
+  });
+
   return router;
 }

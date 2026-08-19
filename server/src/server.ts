@@ -11,6 +11,7 @@ import { createKeysRouter } from './routes/keys';
 import { createUsersRouter } from './routes/users';
 import { createGroupsRouter } from './routes/groups';
 import { createMediaRouter } from './routes/media';
+import { createCallsRouter } from './routes/calls';
 import { ArgusWebSocketManager } from './ws/wsManager';
 
 dotenv.config();
@@ -103,6 +104,7 @@ export function createApp(db: ArgusDatabase) {
   app.use('/api/keys', authMiddleware, createKeysRouter(db));
   app.use('/api/users', authMiddleware, createUsersRouter(db));
   app.use('/api/groups', authMiddleware, createGroupsRouter(db));
+  app.use('/api/calls', authMiddleware, createCallsRouter());
   app.use('/api/media', createMediaRouter(UPLOAD_DIR));
 
   return app;

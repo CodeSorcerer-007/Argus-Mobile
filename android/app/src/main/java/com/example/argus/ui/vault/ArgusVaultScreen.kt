@@ -207,9 +207,9 @@ private fun VaultItemRow(
     ) {
         Icon(
             imageVector = when (item.type) {
-                VaultItemType.NOTE -> Icons.Default.Note
+                VaultItemType.NOTE -> Icons.Default.Description
                 VaultItemType.PHOTO -> Icons.Default.Image
-                VaultItemType.FILE -> Icons.Default.InsertDriveFile
+                VaultItemType.FILE -> Icons.Default.Folder
                 VaultItemType.VIDEO -> Icons.Default.Videocam
             },
             contentDescription = null,

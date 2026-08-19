@@ -145,6 +145,14 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
             """.trimIndent()
         )
 
+        // B-Tree Indexes for Microsecond Performance
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_messages_conv_ts ON messages(conversation_id, timestamp DESC);")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_messages_expires_at ON messages(expires_at);")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_conversations_timestamp ON conversations(last_message_timestamp DESC);")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_contacts_user_id ON contacts(user_id);")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_vault_created ON vault_items(created_at DESC);")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_calls_timestamp ON calls(timestamp DESC);")
+
         // Seed initial sample chats for demonstration
         seedInitialDemoData(db)
     }
@@ -153,8 +161,27 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
         // Schema migrations
     }
 
+    fun purgeExpiredDisappearingMessages() {
+        scope.launch {
+            try {
+                val now = System.currentTimeMillis()
+                val deletedCount = writableDatabase.delete(
+                    "messages",
+                    "expires_at IS NOT NULL AND expires_at > 0 AND expires_at < ?",
+                    arrayOf(now.toString())
+                )
+                if (deletedCount > 0) {
+                    loadConversations()
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("ArgusLocalStore", "purgeExpiredDisappearingMessages failed", e)
+            }
+        }
+    }
+
     fun reloadAll() {
         scope.launch {
+            purgeExpiredDisappearingMessages()
             loadConversations()
             loadContacts()
             loadVaultItems()

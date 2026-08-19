@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.PhoneMissed
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -560,7 +561,7 @@ private fun ContactsTabContent(
             }
         }
 
-        Divider(color = ObsidianBorder)
+        HorizontalDivider(color = ObsidianBorder)
 
         if (contacts.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -637,7 +638,7 @@ private fun CallsTabContent(calls: List<CallRecord>) {
     if (calls.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(imageVector = Icons.Default.PhoneMissed, contentDescription = null, tint = TextMuted, modifier = Modifier.size(54.dp))
+                Icon(imageVector = Icons.AutoMirrored.Filled.PhoneMissed, contentDescription = null, tint = TextMuted, modifier = Modifier.size(54.dp))
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(text = "No recent calls", style = MaterialTheme.typography.titleMedium, color = TextSecondary)
                 Text(text = "Make end-to-end encrypted voice and video calls.", style = MaterialTheme.typography.bodyMedium, color = TextMuted)

@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -192,17 +193,16 @@ fun ChatScreen(
                     if (inputText.isNotBlank()) {
                         IconButton(
                             onClick = {
-                                val textToSend = inputText.trim()
-                                inputText = ""
-                                val replyId = replyingToMessage?.id
-                                replyingToMessage = null
-                                onSendMessage(textToSend, null, null, 0L)
+                                if (inputText.isNotBlank()) {
+                                    onSendMessage(inputText.trim(), null, null, 0L)
+                                    inputText = ""
+                                }
                             },
                             modifier = Modifier
                                 .size(48.dp)
                                 .background(EmeraldPrimary, CircleShape)
                         ) {
-                            Icon(imageVector = Icons.Default.Send, contentDescription = "Send", tint = TextOnEmerald)
+                            Icon(imageVector = Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = TextOnEmerald)
                         }
                     } else {
                         IconButton(
@@ -242,7 +242,7 @@ fun ChatScreen(
                             showAttachmentMenu = false
                             onSendMessage("📷 Camera Capture", "capture.jpg", "image/jpeg", 1800000L)
                         }
-                        AttachmentOption(Icons.Default.InsertDriveFile, "Document", ShieldAmber) {
+                        AttachmentOption(Icons.Default.Description, "Document", ShieldAmber) {
                             showAttachmentMenu = false
                             onSendMessage("📄 Security_Whitepaper.pdf", "doc.pdf", "application/pdf", 5242880L)
                         }
@@ -409,7 +409,7 @@ private fun MessageBubble(
                             .background(ObsidianBlack.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
                             .padding(8.dp)
                     ) {
-                        Icon(imageVector = Icons.Default.InsertDriveFile, contentDescription = null, tint = CyanAccent)
+                        Icon(imageVector = Icons.Default.Description, contentDescription = null, tint = CyanAccent)
                         Spacer(modifier = Modifier.width(8.dp))
                         Column {
                             Text(text = message.text, style = MaterialTheme.typography.titleMedium, color = TextPrimary)
