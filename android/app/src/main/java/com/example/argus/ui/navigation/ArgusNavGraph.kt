@@ -1,5 +1,6 @@
 package com.example.argus.ui.navigation
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -74,6 +75,9 @@ fun ArgusNavGraph(container: AppContainer) {
             }
 
             is Screen.PhoneAuth -> {
+                BackHandler {
+                    currentScreen = Screen.Welcome
+                }
                 PhoneAuthScreen(
                     currentServerUrl = container.preferences.getServerUrl(),
                     onSaveServerUrl = { newUrl ->
@@ -106,6 +110,10 @@ fun ArgusNavGraph(container: AppContainer) {
             }
 
             is Screen.OtpVerify -> {
+                BackHandler {
+                    authErrorMessage = null
+                    currentScreen = Screen.PhoneAuth
+                }
                 OtpVerifyScreen(
                     phoneNumber = screen.phoneNumber,
                     initialCode = screen.suggestedCode,
@@ -154,25 +162,25 @@ fun ArgusNavGraph(container: AppContainer) {
                     conversations = conversations,
                     contacts = contacts,
                     calls = calls,
+                    authRepository = container.authRepository,
                     onConversationClick = { convId ->
                         container.localStore.loadMessagesForConversation(convId)
                         currentScreen = Screen.Chat(convId)
                     },
                     onContactClick = { contact ->
-                        // Check if conversation exists or create one
-                        val existing = conversations.firstOrNull { it.participantIds.contains(contact.userId) }
-                        if (existing != null) {
-                            container.localStore.loadMessagesForConversation(existing.id)
-                            currentScreen = Screen.Chat(existing.id)
-                        } else {
+                        val convId = "conv_${contact.userId}"
+                        val existing = conversations.firstOrNull { it.id == convId }
+                        if (existing == null) {
                             val newConv = Conversation(
-                                id = "conv_${contact.userId}",
+                                id = convId,
                                 title = contact.displayName,
-                                participantIds = listOf(contact.userId)
+                                participantIds = listOf(contact.userId),
+                                avatarUrl = contact.avatarUrl
                             )
                             container.localStore.upsertConversation(newConv)
-                            currentScreen = Screen.Chat(newConv.id)
                         }
+                        container.localStore.loadMessagesForConversation(convId)
+                        currentScreen = Screen.Chat(convId)
                     },
                     onStartCallClick = { contact, callType ->
                         container.callRepository.initiateCall(
@@ -186,17 +194,14 @@ fun ArgusNavGraph(container: AppContainer) {
                     onVaultClick = { currentScreen = Screen.Vault },
                     onShieldClick = { currentScreen = Screen.Shield },
                     onSettingsClick = { currentScreen = Screen.Settings },
-                    onAiAssistantClick = { currentScreen = Screen.AiAssistant },
-                    onNewChatClick = {
-                        val firstContact = contacts.firstOrNull()
-                        if (firstContact != null) {
-                            currentScreen = Screen.Chat("conv_${firstContact.userId}")
-                        }
-                    }
+                    onAiAssistantClick = { currentScreen = Screen.AiAssistant }
                 )
             }
 
             is Screen.Chat -> {
+                BackHandler {
+                    currentScreen = Screen.Main
+                }
                 val conv = conversations.firstOrNull { it.id == screen.conversationId }
                     ?: Conversation(id = screen.conversationId, title = "Secure Chat", participantIds = emptyList())
                 val msgs = messagesMap[screen.conversationId] ?: emptyList()
@@ -254,6 +259,9 @@ fun ArgusNavGraph(container: AppContainer) {
             }
 
             is Screen.SecurityVerify -> {
+                BackHandler {
+                    currentScreen = Screen.Main
+                }
                 val myIdentity = container.authRepository.getOrCreateIdentityKeyPair()
                 val currentUserId = container.preferences.loadCurrentUser()?.id ?: "me"
 
@@ -294,6 +302,9 @@ fun ArgusNavGraph(container: AppContainer) {
             }
 
             is Screen.Vault -> {
+                BackHandler {
+                    currentScreen = Screen.Main
+                }
                 ArgusVaultScreen(
                     vaultRepository = container.vaultRepository,
                     onBackClick = { currentScreen = Screen.Main }
@@ -301,6 +312,9 @@ fun ArgusNavGraph(container: AppContainer) {
             }
 
             is Screen.Shield -> {
+                BackHandler {
+                    currentScreen = Screen.Main
+                }
                 ArgusShieldScreen(
                     shieldRepository = container.shieldRepository,
                     onBackClick = { currentScreen = Screen.Main }
@@ -308,6 +322,9 @@ fun ArgusNavGraph(container: AppContainer) {
             }
 
             is Screen.AiAssistant -> {
+                BackHandler {
+                    currentScreen = Screen.Main
+                }
                 AiAssistantScreen(
                     aiRepository = container.aiAssistantRepository,
                     onBackClick = { currentScreen = Screen.Main }
@@ -315,6 +332,9 @@ fun ArgusNavGraph(container: AppContainer) {
             }
 
             is Screen.Settings -> {
+                BackHandler {
+                    currentScreen = Screen.Main
+                }
                 SettingsScreen(
                     preferences = container.preferences,
                     authRepository = container.authRepository,

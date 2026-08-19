@@ -191,6 +191,68 @@ class ArgusApiClient(
         }
     }
 
+@Serializable
+data class SearchUsersResponse(
+    val results: List<User> = emptyList()
+)
+
+@Serializable
+data class ProfileUpdatePayload(
+    val displayName: String? = null,
+    val username: String? = null,
+    val about: String? = null,
+    val avatarUrl: String? = null
+)
+
+@Serializable
+data class ProfileUpdateResponse(
+    val success: Boolean,
+    val user: User? = null,
+    val error: String? = null
+)
+
+    suspend fun searchUsers(query: String): List<User> = withContext(Dispatchers.IO) {
+        try {
+            val token = getAuthToken() ?: return@withContext emptyList()
+            val encoded = java.net.URLEncoder.encode(query.trim(), "UTF-8")
+            val request = Request.Builder()
+                .url("$baseUrl/api/users/search?q=$encoded")
+                .header("Authorization", "Bearer $token")
+                .get()
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext emptyList()
+                val body = response.body?.string() ?: return@withContext emptyList()
+                json.decodeFromString<SearchUsersResponse>(body).results
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusApiClient", "searchUsers failed: ${e.message}", e)
+            emptyList()
+        }
+    }
+
+    suspend fun updateProfile(displayName: String?, username: String?, about: String? = null, avatarUrl: String? = null): User? = withContext(Dispatchers.IO) {
+        try {
+            val token = getAuthToken() ?: return@withContext null
+            val payload = json.encodeToString(ProfileUpdatePayload(displayName, username, about, avatarUrl))
+            val request = Request.Builder()
+                .url("$baseUrl/api/users/me")
+                .header("Authorization", "Bearer $token")
+                .put(payload.toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val body = response.body?.string() ?: return@withContext null
+                json.decodeFromString<ProfileUpdateResponse>(body).user
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusApiClient", "updateProfile failed: ${e.message}", e)
+            null
+        }
+    }
+
     suspend fun uploadEncryptedMedia(file: File, mimeType: String): String? = withContext(Dispatchers.IO) {
         try {
             val token = getAuthToken()

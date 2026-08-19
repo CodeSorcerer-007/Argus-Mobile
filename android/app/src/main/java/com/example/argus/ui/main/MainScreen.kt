@@ -1,8 +1,8 @@
 package com.example.argus.ui.main
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -20,46 +20,234 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.argus.R
 import com.example.argus.data.model.CallRecord
+import com.example.argus.data.model.CallStatus
 import com.example.argus.data.model.CallType
 import com.example.argus.data.model.Contact
 import com.example.argus.data.model.Conversation
+import com.example.argus.data.model.User
+import com.example.argus.data.repository.AuthRepository
 import com.example.argus.theme.*
 import com.example.argus.ui.components.ArgusAvatar
 import com.example.argus.ui.components.ArgusPulseBadge
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+import java.util.*
 
 enum class MainTab(val title: String, val icon: ImageVector) {
     CHATS("Chats", Icons.Default.ChatBubble),
-    FAVORITES("Saved", Icons.Default.Bookmark),
-    CALLS("Calls", Icons.Default.Call),
     CONTACTS("Contacts", Icons.Default.People),
-    VAULT("Vault", Icons.Default.Lock),
-    SHIELD("Shield", Icons.Default.Shield)
+    FAVORITES("Pinned", Icons.Default.Star),
+    CALLS("Calls", Icons.Default.Phone),
+    VAULT("Vault", Icons.Default.Shield),
+    SHIELD("Monitor", Icons.Default.Security)
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
     conversations: List<Conversation>,
     contacts: List<Contact>,
     calls: List<CallRecord>,
+    authRepository: AuthRepository,
     onConversationClick: (String) -> Unit,
     onContactClick: (Contact) -> Unit,
     onStartCallClick: (Contact, CallType) -> Unit,
     onVaultClick: () -> Unit,
     onShieldClick: () -> Unit,
     onSettingsClick: () -> Unit,
-    onAiAssistantClick: () -> Unit,
-    onNewChatClick: () -> Unit
+    onAiAssistantClick: () -> Unit
 ) {
     var selectedTab by remember { mutableStateOf(MainTab.CHATS) }
     var searchQuery by remember { mutableStateOf("") }
+    var showNewChatDialog by remember { mutableStateOf(false) }
+
+    val coroutineScope = rememberCoroutineScope()
+    val currentUser by authRepository.currentUser.collectAsState()
+
+    // New Chat & User Search Dialog
+    if (showNewChatDialog) {
+        var searchInput by remember { mutableStateOf("") }
+        var isSearching by remember { mutableStateOf(false) }
+        var searchResults by remember { mutableStateOf<List<User>>(emptyList()) }
+        var searchError by remember { mutableStateOf<String?>(null) }
+        var searchJob by remember { mutableStateOf<Job?>(null) }
+
+        AlertDialog(
+            onDismissRequest = { showNewChatDialog = false },
+            containerColor = ObsidianCard,
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(imageVector = Icons.Default.PersonAdd, contentDescription = null, tint = EmeraldPrimary)
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text("Start New Chat", color = TextPrimary, fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 260.dp, max = 450.dp)
+                ) {
+                    Text(
+                        text = "Find friends on Argus by typing their @username (e.g. @alice) or international phone number (+1...).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    OutlinedTextField(
+                        value = searchInput,
+                        onValueChange = { query ->
+                            searchInput = query
+                            searchError = null
+                            searchJob?.cancel()
+                            if (query.trim().length >= 2) {
+                                isSearching = true
+                                searchJob = coroutineScope.launch {
+                                    delay(400) // debounce
+                                    try {
+                                        val results = if (query.trim().startsWith("+")) {
+                                            val found = authRepository.findUserByPhone(query.trim())
+                                            if (found != null) listOf(found) else emptyList()
+                                        } else {
+                                            authRepository.searchUsers(query.trim().removePrefix("@"))
+                                        }
+                                        searchResults = results.filter { it.id != currentUser?.id }
+                                        if (searchResults.isEmpty()) {
+                                            searchError = "No registered user found for \"$query\""
+                                        }
+                                    } catch (e: Exception) {
+                                        searchError = "Search error: ${e.localizedMessage}"
+                                    } finally {
+                                        isSearching = false
+                                    }
+                                }
+                            } else {
+                                searchResults = emptyList()
+                                isSearching = false
+                            }
+                        },
+                        placeholder = { Text("Search @username or +1555...", color = TextMuted) },
+                        leadingIcon = {
+                            Icon(imageVector = Icons.Default.Search, contentDescription = null, tint = EmeraldPrimary)
+                        },
+                        trailingIcon = {
+                            if (isSearching) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = EmeraldPrimary)
+                            } else if (searchInput.isNotEmpty()) {
+                                IconButton(onClick = { searchInput = ""; searchResults = emptyList() }) {
+                                    Icon(imageVector = Icons.Default.Clear, contentDescription = "Clear", tint = TextSecondary)
+                                }
+                            }
+                        },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = EmeraldPrimary,
+                            unfocusedBorderColor = ObsidianBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    if (searchError != null) {
+                        Text(
+                            text = searchError ?: "",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            modifier = Modifier.padding(vertical = 8.dp)
+                        )
+                    }
+
+                    if (searchResults.isNotEmpty()) {
+                        Text(
+                            text = "Matching Users (${searchResults.size}):",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = EmeraldLight,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(bottom = 6.dp)
+                        )
+
+                        LazyColumn(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(searchResults) { user ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(ObsidianSurface)
+                                        .clickable {
+                                            coroutineScope.launch {
+                                                val convId = authRepository.startConversationWithUser(user)
+                                                showNewChatDialog = false
+                                                onConversationClick(convId)
+                                            }
+                                        }
+                                        .padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    ArgusAvatar(name = user.displayName, size = 42.dp, isOnline = user.isOnline)
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(text = user.displayName, style = MaterialTheme.typography.titleMedium, color = TextPrimary)
+                                        Text(
+                                            text = if (user.username != null) "@${user.username}" else user.phoneNumber,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = EmeraldLight
+                                        )
+                                    }
+                                    Icon(
+                                        imageVector = Icons.Default.ChatBubble,
+                                        contentDescription = "Message",
+                                        tint = EmeraldPrimary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                        }
+                    } else if (!isSearching && searchInput.isEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Icon(imageVector = Icons.Default.PersonSearch, contentDescription = null, tint = TextMuted, modifier = Modifier.size(48.dp))
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "Your username is @${currentUser?.username ?: "not_set"}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = EmeraldLight
+                                )
+                                Text(
+                                    text = "Share it with your friend so they can text you!",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = TextSecondary
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showNewChatDialog = false }) {
+                    Text("Close", color = TextSecondary)
+                }
+            }
+        )
+    }
 
     Scaffold(
         containerColor = ObsidianBlack,
@@ -121,20 +309,29 @@ fun MainScreen(
                     OutlinedTextField(
                         value = searchQuery,
                         onValueChange = { searchQuery = it },
-                        placeholder = { Text("Search messages, contacts, files...", color = TextMuted) },
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(14.dp),
-                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp),
+                        placeholder = { Text(text = "Search chats, contacts, or messages...", fontSize = 13.sp, color = TextMuted) },
                         leadingIcon = {
-                            Icon(imageVector = Icons.Default.Search, contentDescription = null, tint = TextMuted)
+                            Icon(imageVector = Icons.Default.Search, contentDescription = "Search", tint = TextSecondary, modifier = Modifier.size(18.dp))
                         },
+                        trailingIcon = {
+                            if (searchQuery.isNotEmpty()) {
+                                IconButton(onClick = { searchQuery = "" }) {
+                                    Icon(imageVector = Icons.Default.Close, contentDescription = "Clear", tint = TextSecondary, modifier = Modifier.size(18.dp))
+                                }
+                            }
+                        },
+                        singleLine = true,
+                        shape = RoundedCornerShape(24.dp),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = EmeraldPrimary,
+                            focusedBorderColor = EmeraldPrimary.copy(alpha = 0.5f),
                             unfocusedBorderColor = ObsidianBorder,
-                            focusedTextColor = TextPrimary,
-                            unfocusedTextColor = TextPrimary,
                             focusedContainerColor = ObsidianCard,
-                            unfocusedContainerColor = ObsidianCard
+                            unfocusedContainerColor = ObsidianCard,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
                         )
                     )
                 }
@@ -165,7 +362,7 @@ fun MainScreen(
         floatingActionButton = {
             if (selectedTab == MainTab.CHATS || selectedTab == MainTab.CONTACTS) {
                 FloatingActionButton(
-                    onClick = onNewChatClick,
+                    onClick = { showNewChatDialog = true },
                     containerColor = EmeraldPrimary,
                     contentColor = TextOnEmerald,
                     shape = CircleShape
@@ -188,7 +385,8 @@ fun MainScreen(
                             it.title.contains(searchQuery, ignoreCase = true) ||
                                     it.lastSnippet.contains(searchQuery, ignoreCase = true)
                         },
-                        onConversationClick = onConversationClick
+                        onConversationClick = onConversationClick,
+                        onNewChatClick = { showNewChatDialog = true }
                     )
                 }
                 MainTab.FAVORITES -> {
@@ -204,7 +402,8 @@ fun MainScreen(
                                     it.phoneNumber.contains(searchQuery)
                         },
                         onContactClick = onContactClick,
-                        onStartCall = onStartCallClick
+                        onStartCall = onStartCallClick,
+                        onAddContactClick = { showNewChatDialog = true }
                     )
                 }
                 MainTab.VAULT -> {
@@ -221,15 +420,27 @@ fun MainScreen(
 @Composable
 private fun ChatsTabContent(
     conversations: List<Conversation>,
-    onConversationClick: (String) -> Unit
+    onConversationClick: (String) -> Unit,
+    onNewChatClick: () -> Unit
 ) {
     if (conversations.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(24.dp)) {
                 Icon(imageVector = Icons.Default.ChatBubbleOutline, contentDescription = null, tint = TextMuted, modifier = Modifier.size(54.dp))
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(text = "No active conversations", style = MaterialTheme.typography.titleMedium, color = TextSecondary)
-                Text(text = "Tap the + button to start a private chat.", style = MaterialTheme.typography.bodyMedium, color = TextMuted)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(text = "Tap the button below to message a friend.", style = MaterialTheme.typography.bodyMedium, color = TextMuted)
+                Spacer(modifier = Modifier.height(16.dp))
+                Button(
+                    onClick = onNewChatClick,
+                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(imageVector = Icons.Default.PersonAdd, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Start New Chat", color = TextOnEmerald)
+                }
             }
         }
     } else {
@@ -250,7 +461,7 @@ private fun ConversationItemRow(
     onClick: () -> Unit
 ) {
     val dateFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
-    val timeStr = dateFormat.format(Date(conversation.lastMessageTimestamp))
+    val timeStr = if (conversation.lastMessageTimestamp > 0) dateFormat.format(Date(conversation.lastMessageTimestamp)) else ""
 
     Row(
         modifier = Modifier
@@ -273,9 +484,7 @@ private fun ConversationItemRow(
                     text = conversation.title,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
-                    color = TextPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    color = TextPrimary
                 )
                 Text(
                     text = timeStr,
@@ -292,11 +501,10 @@ private fun ConversationItemRow(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = conversation.lastSnippet,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary,
+                    text = conversation.lastSnippet.ifEmpty { "Start a secure encrypted conversation" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (conversation.unreadCount > 0) TextPrimary else TextSecondary,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
 
@@ -324,91 +532,87 @@ private fun ConversationItemRow(
 private fun ContactsTabContent(
     contacts: List<Contact>,
     onContactClick: (Contact) -> Unit,
-    onStartCall: (Contact, CallType) -> Unit
+    onStartCall: (Contact, CallType) -> Unit,
+    onAddContactClick: () -> Unit
 ) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(vertical = 8.dp)
-    ) {
-        items(contacts) { contact ->
-            Row(
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Quick Action Bar
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { onAddContactClick() }
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onContactClick(contact) }
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .size(46.dp)
+                    .clip(CircleShape)
+                    .background(EmeraldPrimary.copy(alpha = 0.2f)),
+                contentAlignment = Alignment.Center
             ) {
-                ArgusAvatar(name = contact.displayName, size = 48.dp, isOnline = contact.isOnline)
-
-                Spacer(modifier = Modifier.width(14.dp))
-
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = contact.displayName,
-                            style = MaterialTheme.typography.titleMedium,
-                            color = TextPrimary
-                        )
-                        if (contact.isVerified) {
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Icon(
-                                imageVector = Icons.Default.Verified,
-                                contentDescription = "Verified Safety Number",
-                                tint = EmeraldPrimary,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    }
-                    Text(
-                        text = if (contact.isOnline) "online" else contact.phoneNumber,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (contact.isOnline) EmeraldPrimary else TextSecondary
-                    )
-                }
-
-                IconButton(onClick = { onStartCall(contact, CallType.VOICE) }) {
-                    Icon(imageVector = Icons.Default.Call, contentDescription = "Voice Call", tint = EmeraldPrimary)
-                }
-                IconButton(onClick = { onStartCall(contact, CallType.VIDEO) }) {
-                    Icon(imageVector = Icons.Default.Videocam, contentDescription = "Video Call", tint = CyanAccent)
-                }
+                Icon(imageVector = Icons.Default.PersonAdd, contentDescription = null, tint = EmeraldPrimary)
+            }
+            Spacer(modifier = Modifier.width(14.dp))
+            Column {
+                Text("Add New Friend", style = MaterialTheme.typography.titleMedium, color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                Text("Search by @username or phone number", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
             }
         }
-    }
-}
 
-@Composable
-private fun CallsTabContent(calls: List<CallRecord>) {
-    val dateFormat = remember { SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()) }
+        Divider(color = ObsidianBorder)
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(vertical = 8.dp)
-    ) {
-        items(calls) { call ->
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
+        if (contacts.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text("No saved contacts yet.", color = TextMuted)
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(vertical = 8.dp)
             ) {
-                ArgusAvatar(name = call.peerName, size = 48.dp)
-                Spacer(modifier = Modifier.width(14.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(text = call.peerName, style = MaterialTheme.typography.titleMedium, color = TextPrimary)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = if (call.callType == CallType.VIDEO) Icons.Default.Videocam else Icons.Default.Call,
-                            contentDescription = null,
-                            tint = if (call.status.name == "MISSED") ShieldRed else EmeraldPrimary,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "${call.status.name} • ${dateFormat.format(Date(call.timestamp))}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = TextSecondary
-                        )
+                items(contacts) { contact ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onContactClick(contact) }
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        ArgusAvatar(name = contact.displayName, size = 48.dp, isOnline = contact.isOnline)
+
+                        Spacer(modifier = Modifier.width(14.dp))
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = contact.displayName,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = TextPrimary
+                                )
+                                if (contact.isVerified) {
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Icon(
+                                        imageVector = Icons.Default.Verified,
+                                        contentDescription = "Verified Safety Number",
+                                        tint = EmeraldPrimary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                            Text(
+                                text = if (contact.username != null) "@${contact.username}" else contact.phoneNumber,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (contact.isOnline) EmeraldPrimary else TextSecondary
+                            )
+                        }
+
+                        IconButton(onClick = { onStartCall(contact, CallType.VOICE) }) {
+                            Icon(imageVector = Icons.Default.Call, contentDescription = "Voice Call", tint = EmeraldPrimary)
+                        }
+                        IconButton(onClick = { onStartCall(contact, CallType.VIDEO) }) {
+                            Icon(imageVector = Icons.Default.Videocam, contentDescription = "Video Call", tint = CyanAccent)
+                        }
                     }
                 }
             }
@@ -418,18 +622,56 @@ private fun CallsTabContent(calls: List<CallRecord>) {
 
 @Composable
 private fun FavoritesTabContent() {
-    Box(modifier = Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(imageVector = Icons.Default.BookmarkBorder, contentDescription = null, tint = CyanAccent, modifier = Modifier.size(54.dp))
+            Icon(imageVector = Icons.Default.StarBorder, contentDescription = null, tint = TextMuted, modifier = Modifier.size(54.dp))
             Spacer(modifier = Modifier.height(12.dp))
-            Text(text = "Saved Messages & Documents", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = "Star any message, encrypted photo, or document to access it instantly here with custom folder tags.",
-                style = MaterialTheme.typography.bodyMedium,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                color = TextSecondary
-            )
+            Text(text = "No pinned chats", style = MaterialTheme.typography.titleMedium, color = TextSecondary)
+            Text(text = "Long-press any chat to pin it here.", style = MaterialTheme.typography.bodyMedium, color = TextMuted)
+        }
+    }
+}
+
+@Composable
+private fun CallsTabContent(calls: List<CallRecord>) {
+    if (calls.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(imageVector = Icons.Default.PhoneMissed, contentDescription = null, tint = TextMuted, modifier = Modifier.size(54.dp))
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(text = "No recent calls", style = MaterialTheme.typography.titleMedium, color = TextSecondary)
+                Text(text = "Make end-to-end encrypted voice and video calls.", style = MaterialTheme.typography.bodyMedium, color = TextMuted)
+            }
+        }
+    } else {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(vertical = 8.dp)
+        ) {
+            items(calls) { call ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    ArgusAvatar(name = call.peerName, size = 48.dp)
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(text = call.peerName, style = MaterialTheme.typography.titleMedium, color = TextPrimary)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (call.callType == CallType.VIDEO) Icons.Default.Videocam else Icons.Default.Call,
+                                contentDescription = null,
+                                tint = if (call.status == CallStatus.MISSED) Color(0xFFFF6B6B) else EmeraldPrimary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(text = call.status.name, style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+                        }
+                    }
+                }
+            }
         }
     }
 }

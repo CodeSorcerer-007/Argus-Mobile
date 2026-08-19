@@ -350,12 +350,33 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
                 if (msg.isEncrypted) 1 else 0
             )
         )
-        // Update conversation snippet
+        // Update or insert conversation snippet
         val convSnippet = if (msg.mediaType != null) "[${msg.mediaType}] ${msg.text}" else msg.text
-        db.execSQL(
-            "UPDATE conversations SET last_snippet = ?, last_message_timestamp = ? WHERE id = ?",
-            arrayOf<Any?>(convSnippet, msg.timestamp, msg.conversationId)
-        )
+        val cursor = db.rawQuery("SELECT id FROM conversations WHERE id = ?", arrayOf(msg.conversationId))
+        val exists = cursor.use { it.moveToFirst() }
+        if (!exists) {
+            val peerId = if (msg.senderId == "me" || msg.senderId.startsWith("u_")) msg.recipientId else msg.senderId
+            val contactCursor = db.rawQuery("SELECT display_name, avatar_url FROM contacts WHERE user_id = ?", arrayOf(peerId))
+            val (title, avatarUrl) = contactCursor.use {
+                if (it.moveToFirst()) {
+                    Pair(it.getString(0) ?: "Secure Chat", it.getString(1))
+                } else {
+                    Pair("User ${peerId.takeLast(4)}", null)
+                }
+            }
+            db.execSQL(
+                """
+                INSERT INTO conversations (id, type, title, participant_ids, last_snippet, last_message_timestamp, unread_count, is_pinned, is_archived, is_locked, disappearing_duration, avatar_url)
+                VALUES (?, 'DIRECT', ?, ?, ?, ?, 0, 0, 0, 0, NULL, ?)
+                """.trimIndent(),
+                arrayOf<Any?>(msg.conversationId, title, json.encodeToString(listOf(peerId)), convSnippet, msg.timestamp, avatarUrl)
+            )
+        } else {
+            db.execSQL(
+                "UPDATE conversations SET last_snippet = ?, last_message_timestamp = ? WHERE id = ?",
+                arrayOf<Any?>(convSnippet, msg.timestamp, msg.conversationId)
+            )
+        }
         loadMessagesForConversation(msg.conversationId)
         loadConversations()
     }

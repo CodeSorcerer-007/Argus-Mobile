@@ -109,6 +109,68 @@ class AuthRepository(
         return newPair
     }
 
+    fun hashPhoneNumber(phone: String): String {
+        val bytes = java.security.MessageDigest.getInstance("SHA-256")
+            .digest("Argus_Salt_2026:${phone.trim()}".toByteArray(Charsets.UTF_8))
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
+
+    suspend fun searchUsers(query: String): List<User> {
+        return apiClient.searchUsers(query)
+    }
+
+    suspend fun findUserByPhone(phoneNumber: String): User? {
+        val hash = hashPhoneNumber(phoneNumber)
+        val matches = apiClient.discoverContacts(listOf(hash))
+        return matches.firstOrNull()
+    }
+
+    suspend fun startConversationWithUser(user: User): String {
+        val contact = com.example.argus.data.model.Contact(
+            id = "contact_${user.id}",
+            userId = user.id,
+            displayName = user.displayName,
+            phoneNumber = user.phoneNumber,
+            username = user.username,
+            avatarUrl = user.avatarUrl,
+            identityKeyBase64 = user.identityKeyBase64,
+            isVerified = false,
+            safetyNumber = null,
+            isOnline = user.isOnline,
+            lastSeen = user.lastSeen
+        )
+        localStore.upsertContact(contact)
+
+        try {
+            apiClient.fetchTargetPreKeyBundle(user.id)
+        } catch (e: Exception) {
+            // Lazily initializes on first message send
+        }
+
+        val convId = "conv_${user.id}"
+        val existing = localStore.loadConversations().firstOrNull { it.id == convId }
+        if (existing == null) {
+            val conv = com.example.argus.data.model.Conversation(
+                id = convId,
+                title = user.displayName,
+                participantIds = listOf(user.id),
+                avatarUrl = user.avatarUrl
+            )
+            localStore.upsertConversation(conv)
+        }
+        return convId
+    }
+
+    suspend fun updateProfile(displayName: String?, username: String?, about: String? = null): Result<User> {
+        val updated = apiClient.updateProfile(displayName, username, about)
+        return if (updated != null) {
+            preferences.saveCurrentUser(updated)
+            Result.success(updated)
+        } else {
+            Result.failure(Exception("Failed to update profile. Username may already be taken."))
+        }
+    }
+
     fun logout() {
         webSocketClient.disconnect()
         preferences.clearAll()

@@ -21,6 +21,7 @@ import com.example.argus.data.repository.AuthRepository
 import com.example.argus.theme.*
 import com.example.argus.ui.components.ArgusAvatar
 import com.example.argus.ui.components.ArgusTopBar
+import kotlinx.coroutines.launch
 
 @Composable
 fun SettingsScreen(
@@ -35,6 +36,148 @@ fun SettingsScreen(
     var isReadReceipts by remember { mutableStateOf(preferences.isReadReceiptsEnabled()) }
     var isTypingIndicators by remember { mutableStateOf(preferences.isTypingIndicatorsEnabled()) }
     var isDataSaver by remember { mutableStateOf(preferences.isDataSaverEnabled()) }
+
+    var showEditProfileDialog by remember { mutableStateOf(false) }
+    var editDisplayName by remember(currentUser) { mutableStateOf(currentUser?.displayName ?: "") }
+    var editUsername by remember(currentUser) { mutableStateOf(currentUser?.username ?: "") }
+    var profileSaveError by remember { mutableStateOf<String?>(null) }
+    var isProfileSaving by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
+
+    var showServerDialog by remember { mutableStateOf(false) }
+    var serverUrlInput by remember { mutableStateOf(preferences.getServerUrl()) }
+
+    if (showEditProfileDialog) {
+        AlertDialog(
+            onDismissRequest = { if (!isProfileSaving) showEditProfileDialog = false },
+            containerColor = ObsidianCard,
+            title = {
+                Text("Edit Profile", color = TextPrimary, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        "Set your Display Name and @username so friends can easily find and message you.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+
+                    OutlinedTextField(
+                        value = editDisplayName,
+                        onValueChange = { editDisplayName = it },
+                        label = { Text("Display Name") },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = EmeraldPrimary,
+                            unfocusedBorderColor = ObsidianBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    OutlinedTextField(
+                        value = editUsername,
+                        onValueChange = { editUsername = it.filter { c -> c.isLetterOrDigit() || c == '_' }.lowercase() },
+                        label = { Text("Username (@)") },
+                        singleLine = true,
+                        prefix = { Text("@", color = EmeraldLight) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = EmeraldPrimary,
+                            unfocusedBorderColor = ObsidianBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    if (profileSaveError != null) {
+                        Text(
+                            text = profileSaveError ?: "",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFFFF6B6B)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        isProfileSaving = true
+                        profileSaveError = null
+                        coroutineScope.launch {
+                            val cleanUser = if (editUsername.trim().isEmpty()) null else editUsername.trim()
+                            val cleanName = if (editDisplayName.trim().isEmpty()) "Argus User" else editDisplayName.trim()
+                            val res = authRepository.updateProfile(cleanName, cleanUser)
+                            isProfileSaving = false
+                            if (res.isSuccess) {
+                                showEditProfileDialog = false
+                            } else {
+                                profileSaveError = res.exceptionOrNull()?.localizedMessage ?: "Failed to update profile"
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary),
+                    enabled = !isProfileSaving
+                ) {
+                    Text(if (isProfileSaving) "Saving..." else "Save Changes", color = TextOnEmerald)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEditProfileDialog = false }, enabled = !isProfileSaving) {
+                    Text("Cancel", color = TextSecondary)
+                }
+            }
+        )
+    }
+
+    if (showServerDialog) {
+        AlertDialog(
+            onDismissRequest = { showServerDialog = false },
+            containerColor = ObsidianCard,
+            title = {
+                Text("Backend Server Configuration", color = TextPrimary, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        "Configure the active Argus E2EE Gateway endpoint.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextSecondary
+                    )
+                    OutlinedTextField(
+                        value = serverUrlInput,
+                        onValueChange = { serverUrlInput = it },
+                        label = { Text("Server Base URL") },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = EmeraldPrimary,
+                            unfocusedBorderColor = ObsidianBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        preferences.setServerUrl(serverUrlInput)
+                        showServerDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary)
+                ) {
+                    Text("Save", color = TextOnEmerald)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showServerDialog = false }) {
+                    Text("Cancel", color = TextSecondary)
+                }
+            }
+        )
+    }
 
     Scaffold(
         containerColor = ObsidianBlack,
@@ -53,35 +196,51 @@ fun SettingsScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // Profile Card
+            // Profile Card (Clickable to Edit)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(16.dp))
                     .background(ObsidianCard)
+                    .clickable {
+                        editDisplayName = currentUser?.displayName ?: ""
+                        editUsername = currentUser?.username ?: ""
+                        profileSaveError = null
+                        showEditProfileDialog = true
+                    }
                     .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                ArgusAvatar(name = currentUser?.displayName ?: "Argus User", size = 60.dp)
-                Spacer(modifier = Modifier.width(16.dp))
-                Column {
-                    Text(
-                        text = currentUser?.displayName ?: "Argus User",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = TextPrimary
-                    )
-                    Text(
-                        text = currentUser?.phoneNumber ?: "+1 555 000 0000",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = TextSecondary
-                    )
-                    Text(
-                        text = "Username: @${currentUser?.username ?: "not set"}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = EmeraldLight
-                    )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    ArgusAvatar(name = currentUser?.displayName ?: "Argus User", size = 56.dp)
+                    Spacer(modifier = Modifier.width(14.dp))
+                    Column {
+                        Text(
+                            text = currentUser?.displayName ?: "Argus User",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary
+                        )
+                        Text(
+                            text = currentUser?.phoneNumber ?: "+1 555 000 0000",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = TextSecondary
+                        )
+                        Text(
+                            text = if (currentUser?.username != null) "@${currentUser?.username}" else "Tap to set @username",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (currentUser?.username != null) EmeraldLight else CyanAccent,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
                 }
+                Icon(
+                    imageVector = Icons.Default.Edit,
+                    contentDescription = "Edit Profile",
+                    tint = EmeraldPrimary,
+                    modifier = Modifier.size(20.dp)
+                )
             }
 
             // Security & Privacy Group
@@ -98,8 +257,8 @@ fun SettingsScreen(
             )
             SettingsToggleRow(
                 icon = Icons.Default.Fingerprint,
-                title = "Biometric Vault Gate",
-                subtitle = "Hardware Keystore biometrics",
+                title = "Biometric Vault Access",
+                subtitle = "Use Fingerprint/Face Unlock for hardware-encrypted vault",
                 checked = isBiometric,
                 onCheckedChange = {
                     isBiometric = it
@@ -109,7 +268,7 @@ fun SettingsScreen(
             SettingsToggleRow(
                 icon = Icons.Default.DoneAll,
                 title = "Read Receipts",
-                subtitle = "Send & receive read acknowledgements",
+                subtitle = "Let contacts see when you've read their messages",
                 checked = isReadReceipts,
                 onCheckedChange = {
                     isReadReceipts = it
@@ -119,7 +278,7 @@ fun SettingsScreen(
             SettingsToggleRow(
                 icon = Icons.Default.Keyboard,
                 title = "Typing Indicators",
-                subtitle = "Let contacts know when you are typing",
+                subtitle = "Display typing status when composing messages",
                 checked = isTypingIndicators,
                 onCheckedChange = {
                     isTypingIndicators = it
@@ -127,115 +286,45 @@ fun SettingsScreen(
                 }
             )
 
-            // Storage & Network Group
+            // Storage & Network
             SettingsSectionHeader("Storage & Network")
-            var showServerUrlDialog by remember { mutableStateOf(false) }
-            var currentServerUrl by remember { mutableStateOf(preferences.getServerUrl()) }
-            var tempServerUrl by remember(currentServerUrl) { mutableStateOf(currentServerUrl) }
-
-            if (showServerUrlDialog) {
-                AlertDialog(
-                    onDismissRequest = { showServerUrlDialog = false },
-                    containerColor = ObsidianCard,
-                    title = { Text("Backend Server URL", color = TextPrimary, fontWeight = FontWeight.Bold) },
-                    text = {
-                        Column {
-                            Text(
-                                "Configure the endpoint for Argus E2EE Gateway (Render Cloud URL, Local IP, or Emulator):",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = TextSecondary
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-                            OutlinedTextField(
-                                value = tempServerUrl,
-                                onValueChange = { tempServerUrl = it },
-                                label = { Text("Server URL") },
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = EmeraldPrimary,
-                                    unfocusedBorderColor = ObsidianBorder,
-                                    focusedTextColor = TextPrimary,
-                                    unfocusedTextColor = TextPrimary,
-                                    focusedContainerColor = ObsidianSurface,
-                                    unfocusedContainerColor = ObsidianSurface
-                                )
-                            )
-                        }
-                    },
-                    confirmButton = {
-                        Button(
-                            onClick = {
-                                preferences.setServerUrl(tempServerUrl)
-                                currentServerUrl = preferences.getServerUrl()
-                                showServerUrlDialog = false
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary)
-                        ) {
-                            Text("Save", color = ObsidianBlack, fontWeight = FontWeight.Bold)
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { showServerUrlDialog = false }) {
-                            Text("Cancel", color = TextSecondary)
-                        }
-                    }
-                )
-            }
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(ObsidianCard)
-                    .clickable { showServerUrlDialog = true }
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(imageVector = Icons.Default.Dns, contentDescription = null, tint = EmeraldPrimary, modifier = Modifier.size(24.dp))
-                Spacer(modifier = Modifier.width(14.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(text = "Backend Server URL", style = MaterialTheme.typography.titleMedium, color = TextPrimary)
-                    Text(text = currentServerUrl, style = MaterialTheme.typography.labelSmall, color = EmeraldLight)
-                }
-                Icon(imageVector = Icons.Default.ChevronRight, contentDescription = null, tint = TextMuted)
-            }
-
             SettingsToggleRow(
-                icon = Icons.Default.DataSaverOn,
-                title = "Travel / Low-Data Mode",
-                subtitle = "Aggressive media compression on metered connections",
+                icon = Icons.Default.DataUsage,
+                title = "Data Saver",
+                subtitle = "Download media attachments only on Wi-Fi",
                 checked = isDataSaver,
                 onCheckedChange = {
                     isDataSaver = it
                     preferences.setDataSaverEnabled(it)
                 }
             )
+            SettingsClickableRow(
+                icon = Icons.Default.Dns,
+                title = "Backend Server URL",
+                subtitle = preferences.getServerUrl(),
+                onClick = {
+                    serverUrlInput = preferences.getServerUrl()
+                    showServerDialog = true
+                }
+            )
 
-            // About & Logout
-            SettingsSectionHeader("Account & Device")
-            Row(
+            // Account & Sign Out
+            SettingsSectionHeader("Account")
+            Button(
+                onClick = onLogoutClick,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(ObsidianCard)
-                    .clickable { onLogoutClick() }
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically
+                    .height(52.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFF3B1818),
+                    contentColor = Color(0xFFFF6B6B)
+                )
             ) {
-                Icon(imageVector = Icons.Default.Logout, contentDescription = null, tint = ShieldRed)
-                Spacer(modifier = Modifier.width(14.dp))
-                Text(text = "Log Out & Revoke Device Keys", color = ShieldRed, fontWeight = FontWeight.Bold)
+                Icon(imageVector = Icons.Default.Logout, contentDescription = "Log Out")
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(text = "Log Out & Wipe Local Keys", fontWeight = FontWeight.Bold)
             }
-
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "Argus v1.0.0 (Production Build)\nDouble Ratchet Signal Protocol • Android Keystore Backed",
-                style = MaterialTheme.typography.labelSmall,
-                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                color = TextMuted,
-                modifier = Modifier.fillMaxWidth()
-            )
         }
     }
 }
@@ -243,11 +332,11 @@ fun SettingsScreen(
 @Composable
 private fun SettingsSectionHeader(title: String) {
     Text(
-        text = title,
-        style = MaterialTheme.typography.labelLarge,
-        color = EmeraldPrimary,
+        text = title.uppercase(),
+        style = MaterialTheme.typography.labelSmall,
+        color = EmeraldLight,
         fontWeight = FontWeight.Bold,
-        modifier = Modifier.padding(top = 8.dp)
+        modifier = Modifier.padding(start = 4.dp, top = 8.dp)
     )
 }
 
@@ -263,15 +352,21 @@ private fun SettingsToggleRow(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
-            .background(ObsidianCard)
+            .background(ObsidianSurface)
             .padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Icon(imageVector = icon, contentDescription = null, tint = EmeraldPrimary, modifier = Modifier.size(24.dp))
-        Spacer(modifier = Modifier.width(14.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(text = title, style = MaterialTheme.typography.titleMedium, color = TextPrimary)
-            Text(text = subtitle, style = MaterialTheme.typography.labelSmall, color = TextSecondary)
+        Row(
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(imageVector = icon, contentDescription = null, tint = EmeraldPrimary, modifier = Modifier.size(24.dp))
+            Spacer(modifier = Modifier.width(16.dp))
+            Column {
+                Text(text = title, style = MaterialTheme.typography.bodyLarge, color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                Text(text = subtitle, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+            }
         }
         Switch(
             checked = checked,
@@ -279,8 +374,40 @@ private fun SettingsToggleRow(
             colors = SwitchDefaults.colors(
                 checkedThumbColor = TextOnEmerald,
                 checkedTrackColor = EmeraldPrimary,
-                uncheckedTrackColor = ObsidianSurface
+                uncheckedTrackColor = ObsidianCard
             )
         )
+    }
+}
+
+@Composable
+private fun SettingsClickableRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(ObsidianSurface)
+            .clickable { onClick() }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Row(
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(imageVector = icon, contentDescription = null, tint = EmeraldPrimary, modifier = Modifier.size(24.dp))
+            Spacer(modifier = Modifier.width(16.dp))
+            Column {
+                Text(text = title, style = MaterialTheme.typography.bodyLarge, color = TextPrimary, fontWeight = FontWeight.SemiBold)
+                Text(text = subtitle, style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+            }
+        }
+        Icon(imageVector = Icons.Default.ChevronRight, contentDescription = null, tint = TextSecondary)
     }
 }
