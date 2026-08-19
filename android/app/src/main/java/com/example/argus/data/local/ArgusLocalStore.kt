@@ -17,7 +17,7 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
 
     companion object {
         const val DATABASE_NAME = "argus_secure_local.db"
-        const val DATABASE_VERSION = 1
+        const val DATABASE_VERSION = 2
 
         private val json = Json { ignoreUnknownKeys = true }
     }
@@ -152,13 +152,16 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_contacts_user_id ON contacts(user_id);")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_vault_created ON vault_items(created_at DESC);")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_calls_timestamp ON calls(timestamp DESC);")
-
-        // Seed initial sample chats for demonstration
-        seedInitialDemoData(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // Schema migrations
+        db.execSQL("DROP TABLE IF EXISTS conversations")
+        db.execSQL("DROP TABLE IF EXISTS messages")
+        db.execSQL("DROP TABLE IF EXISTS contacts")
+        db.execSQL("DROP TABLE IF EXISTS vault_items")
+        db.execSQL("DROP TABLE IF EXISTS calls")
+        db.execSQL("DROP TABLE IF EXISTS ratchet_sessions")
+        onCreate(db)
     }
 
     fun purgeExpiredDisappearingMessages() {
@@ -187,63 +190,6 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
             loadVaultItems()
             loadCalls()
         }
-    }
-
-    private fun seedInitialDemoData(db: SQLiteDatabase) {
-        val now = System.currentTimeMillis()
-
-        // Seed default contacts
-        db.execSQL(
-            """
-            INSERT OR IGNORE INTO contacts (id, user_id, display_name, phone_number, username, identity_key, is_verified, safety_number, is_online, last_seen)
-            VALUES 
-            ('c1', 'u_elena', 'Elena Rostova', '+15551234567', 'elena_r', 'id_key_elena', 1, '48201 92837 10928 38472 91827 36452 91827 36452 10928 38472 48201 92837', 1, $now),
-            ('c2', 'u_marcus', 'Marcus Vance (Security)', '+15559876543', 'mvance', 'id_key_marcus', 1, '19283 83746 56473 82910 29384 75647 19283 83746 56473 82910 29384 75647', 0, ${now - 1800000}),
-            ('c3', 'u_sophia', 'Sophia Chen', '+15553334444', 'sophia_c', 'id_key_sophia', 0, '99281 38472 10293 84756 10293 84756 99281 38472 10293 84756 10293 84756', 1, $now)
-            """.trimIndent()
-        )
-
-        // Seed default conversations
-        db.execSQL(
-            """
-            INSERT OR IGNORE INTO conversations (id, type, title, participant_ids, last_snippet, last_message_timestamp, unread_count, is_pinned, is_archived, is_locked)
-            VALUES 
-            ('conv_elena', 'DIRECT', 'Elena Rostova', '["u_elena"]', 'The Signal Double Ratchet session is verified.', $now, 0, 1, 0, 0),
-            ('conv_marcus', 'DIRECT', 'Marcus Vance (Security)', '["u_marcus"]', 'Encrypted file report sent. Check the Vault.', ${now - 3600000}, 1, 0, 0, 0),
-            ('conv_group_dev', 'GROUP', 'Argus Core Architecture', '["u_elena", "u_marcus", "u_sophia"]', 'Zero-knowledge verification is passing all tests.', ${now - 7200000}, 0, 0, 0, 0)
-            """.trimIndent()
-        )
-
-        // Seed messages
-        db.execSQL(
-            """
-            INSERT OR IGNORE INTO messages (id, conversation_id, sender_id, recipient_id, text, status, timestamp)
-            VALUES 
-            ('m1', 'conv_elena', 'u_elena', 'me', 'Hey! Glad we switched to Argus for private messaging.', 'READ', ${now - 600000}),
-            ('m2', 'conv_elena', 'me', 'u_elena', 'The Signal Double Ratchet session is verified.', 'READ', ${now - 300000}),
-            ('m3', 'conv_marcus', 'u_marcus', 'me', 'Encrypted file report sent. Check the Vault.', 'DELIVERED', ${now - 3600000})
-            """.trimIndent()
-        )
-
-        // Seed vault demo items
-        db.execSQL(
-            """
-            INSERT OR IGNORE INTO vault_items (id, title, type, content_or_path, file_size, mime_type, created_at, updated_at)
-            VALUES 
-            ('v1', 'Argus Master Recovery Key Phrase', 'NOTE', 'quantum shield obsidian crystal ratchet zero knowledge hardware biometric', 64, 'text/plain', $now, $now),
-            ('v2', 'Project Cryptographic Audit 2026.pdf', 'FILE', 'encrypted_vault_audit_blob.enc', 2457600, 'application/pdf', $now, $now)
-            """.trimIndent()
-        )
-
-        // Seed calls
-        db.execSQL(
-            """
-            INSERT OR IGNORE INTO calls (id, peer_id, peer_name, call_type, status, duration, timestamp)
-            VALUES 
-            ('call_1', 'u_elena', 'Elena Rostova', 'VIDEO', 'CONNECTED', 342, ${now - 86400000}),
-            ('call_2', 'u_marcus', 'Marcus Vance (Security)', 'VOICE', 'MISSED', 0, ${now - 43200000})
-            """.trimIndent()
-        )
     }
 
     // --- Conversations CRUD ---

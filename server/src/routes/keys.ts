@@ -8,7 +8,7 @@ export function createKeysRouter(db: ArgusDatabase): Router {
   /**
    * Publish or update PreKey bundle for the authenticated user and device
    */
-  router.post('/publish-bundle', (req: Request, res: Response): void => {
+  const handlePublishBundle = (req: Request, res: Response): void => {
     const { userId, deviceId } = (req as any).user;
     const {
       identityPublicKeyBase64,
@@ -45,6 +45,67 @@ export function createKeysRouter(db: ArgusDatabase): Router {
 
     db.save();
     res.json({ success: true, message: 'PreKey bundle published successfully', availableOneTimeKeys: bundle.oneTimePreKeys.length });
+  };
+
+  router.post('/publish-bundle', handlePublishBundle);
+  router.post('/publish', handlePublishBundle);
+
+  /**
+   * Check PreKey bundle health and remaining one-time keys count
+   */
+  router.get('/status', (req: Request, res: Response): void => {
+    const { userId, deviceId } = (req as any).user;
+    const bundleKey = `${userId}:${deviceId}`;
+    const bundle = db.keyBundles.get(bundleKey);
+
+    if (!bundle) {
+      res.status(404).json({ error: 'No PreKey bundle found for device', needsReplenishment: true, availableOneTimeKeys: 0 });
+      return;
+    }
+
+    const availableOneTimeKeys = bundle.oneTimePreKeys.length;
+    res.json({
+      success: true,
+      userId,
+      deviceId,
+      signedPreKeyId: bundle.signedPreKeyId,
+      availableOneTimeKeys,
+      needsReplenishment: availableOneTimeKeys < 10,
+      updatedAt: bundle.updatedAt
+    });
+  });
+
+  /**
+   * Replenish one-time prekeys when pool is running low
+   */
+  router.post('/replenish', (req: Request, res: Response): void => {
+    const { userId, deviceId } = (req as any).user;
+    const { oneTimePreKeys } = req.body;
+
+    if (!Array.isArray(oneTimePreKeys) || oneTimePreKeys.length === 0) {
+      res.status(400).json({ error: 'oneTimePreKeys array is required and must not be empty' });
+      return;
+    }
+
+    const bundleKey = `${userId}:${deviceId}`;
+    const bundle = db.keyBundles.get(bundleKey);
+
+    if (!bundle) {
+      res.status(404).json({ error: 'Initial PreKey bundle must be published before replenishing' });
+      return;
+    }
+
+    // Append new one-time prekeys to existing pool
+    bundle.oneTimePreKeys.push(...oneTimePreKeys);
+    bundle.updatedAt = Date.now();
+    db.save();
+
+    res.json({
+      success: true,
+      message: `Successfully replenished ${oneTimePreKeys.length} one-time prekey(s)`,
+      availableOneTimeKeys: bundle.oneTimePreKeys.length,
+      needsReplenishment: bundle.oneTimePreKeys.length < 10
+    });
   });
 
   /**
@@ -84,7 +145,8 @@ export function createKeysRouter(db: ArgusDatabase): Router {
       signedPreKeyPublicBase64: foundBundle.signedPreKeyPublicBase64,
       signedPreKeySignatureBase64: foundBundle.signedPreKeySignatureBase64,
       oneTimePreKeyId: otpk ? otpk.keyId : null,
-      oneTimePreKeyPublicBase64: otpk ? otpk.publicKeyBase64 : null
+      oneTimePreKeyPublicBase64: otpk ? otpk.publicKeyBase64 : null,
+      remainingOneTimeKeys: foundBundle.oneTimePreKeys.length
     });
   });
 

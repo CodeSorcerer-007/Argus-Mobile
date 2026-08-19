@@ -10,7 +10,7 @@ const ALLOWED_EXTENSIONS = new Set([
   '.pdf', '.txt', '.doc', '.docx', '.blob'
 ]);
 
-export function createMediaRouter(uploadDir: string = './uploads'): Router {
+export function createMediaRouter(uploadDir: string = './uploads', authMiddleware?: any): Router {
   const router = Router();
   const absoluteUploadDir = path.resolve(uploadDir);
 
@@ -37,10 +37,16 @@ export function createMediaRouter(uploadDir: string = './uploads'): Router {
     }
   });
 
+  const uploadHandlers: any[] = [];
+  if (authMiddleware) {
+    uploadHandlers.push(authMiddleware);
+  }
+  uploadHandlers.push(upload.single('file'));
+
   /**
    * Upload encrypted media blob (Authenticated)
    */
-  router.post('/upload', upload.single('file'), (req: Request, res: Response): void => {
+  router.post('/upload', ...uploadHandlers, (req: Request, res: Response): void => {
     if (!req.file) {
       res.status(400).json({ error: 'Valid file attachment is required' });
       return;

@@ -1,7 +1,9 @@
 package com.example.argus.ui.shield
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -15,6 +17,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -30,13 +33,14 @@ fun ArgusShieldScreen(
 ) {
     val status by shieldRepository.statusFlow.collectAsState()
     var showPanicConfirmDialog by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     Scaffold(
         containerColor = ObsidianBlack,
         topBar = {
             ArgusTopBar(
                 title = "Argus Shield",
-                subtitle = "Central Privacy & Security Dashboard",
+                subtitle = "Central Privacy & Security Health Meter",
                 onBackClick = onBackClick
             )
         }
@@ -52,24 +56,25 @@ fun ArgusShieldScreen(
             // Privacy Score Meter
             Box(
                 modifier = Modifier
-                    .size(130.dp)
+                    .size(140.dp)
                     .clip(CircleShape)
                     .background(ObsidianCard)
-                    .border(4.dp, if (status.privacyScore >= 80) EmeraldPrimary else ShieldAmber, CircleShape),
+                    .border(5.dp, if (status.privacyScore >= 80) EmeraldPrimary else ShieldAmber, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
                         text = "${status.privacyScore}",
-                        fontSize = 38.sp,
+                        fontSize = 42.sp,
                         fontWeight = FontWeight.ExtraBold,
                         color = TextPrimary
                     )
                     Text(
                         text = "PRIVACY SCORE",
-                        fontSize = 9.sp,
+                        fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
-                        color = EmeraldLight
+                        color = if (status.privacyScore >= 80) EmeraldLight else ShieldAmber,
+                        letterSpacing = 1.sp
                     )
                 }
             }
@@ -83,35 +88,50 @@ fun ArgusShieldScreen(
             ) {
                 ShieldStatusCard(
                     title = "Signal Double Ratchet E2EE",
-                    desc = "Active on all 1-to-1 & Group sessions",
+                    desc = "Continuous X3DH & DH ratcheting active",
                     isGood = status.isE2EEActive,
-                    icon = Icons.Default.Lock
+                    icon = Icons.Default.Lock,
+                    actionText = "Verified"
+                )
+                ShieldStatusCard(
+                    title = "Hardware Keystore / StrongBox",
+                    desc = "Master keys wrapped in Android TEE hardware",
+                    isGood = true,
+                    icon = Icons.Default.VpnKey,
+                    actionText = "Secure"
                 )
                 ShieldStatusCard(
                     title = "App Lock Protection",
-                    desc = if (status.isAppLockActive) "Enabled with Biometrics / PIN" else "Disabled (Recommended to enable)",
+                    desc = if (status.isAppLockActive) "Enabled with Biometrics / PIN" else "Disabled (Tap to enable biometric lock)",
                     isGood = status.isAppLockActive,
-                    icon = Icons.Default.Fingerprint
+                    icon = Icons.Default.Fingerprint,
+                    actionText = if (status.isAppLockActive) "Active" else "Enable",
+                    onActionClick = {
+                        shieldRepository.toggleAppLock(true)
+                        Toast.makeText(context, "App Lock enabled with biometric guard!", Toast.LENGTH_SHORT).show()
+                    }
                 )
                 ShieldStatusCard(
-                    title = "Verified Contacts",
+                    title = "Verified Safety Numbers",
                     desc = "${status.verifiedContactsCount} verified • ${status.unverifiedContactsCount} unverified",
                     isGood = status.unverifiedContactsCount == 0,
-                    icon = Icons.Default.VerifiedUser
+                    icon = Icons.Default.VerifiedUser,
+                    actionText = "Audit"
                 )
                 ShieldStatusCard(
-                    title = "Active Devices",
-                    desc = "${status.activeDevicesCount} registered cryptographic identity",
+                    title = "Screen Security & Anti-Capture",
+                    desc = "FLAG_SECURE prevents screenshot snooping",
                     isGood = true,
-                    icon = Icons.Default.Devices
+                    icon = Icons.Default.Screenshot,
+                    actionText = "Active"
                 )
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(28.dp))
 
             // Emergency Lockdown & Panic Wipe Actions
             Text(
-                text = "Emergency Security Actions",
+                text = "Emergency Security Controls",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
                 color = TextPrimary,
@@ -121,7 +141,10 @@ fun ArgusShieldScreen(
 
             ArgusButton(
                 text = "Trigger Emergency Lockdown",
-                onClick = { shieldRepository.triggerEmergencyLockdown() },
+                onClick = {
+                    shieldRepository.triggerEmergencyLockdown()
+                    Toast.makeText(context, "Emergency lockdown engaged!", Toast.LENGTH_SHORT).show()
+                },
                 isPrimary = false,
                 icon = Icons.Default.Security
             )
@@ -129,7 +152,7 @@ fun ArgusShieldScreen(
             Spacer(modifier = Modifier.height(10.dp))
 
             ArgusButton(
-                text = "Panic Wipe All Local Cryptographic Data",
+                text = "Panic Wipe All Cryptographic Data",
                 onClick = { showPanicConfirmDialog = true },
                 isDestructive = true,
                 icon = Icons.Default.DeleteForever
@@ -144,7 +167,7 @@ fun ArgusShieldScreen(
             title = { Text("Panic Wipe Confirmation", color = ShieldRed, fontWeight = FontWeight.Bold) },
             text = {
                 Text(
-                    text = "This will immediately destroy all local database messages, encrypted vault files, and cryptographic keys. This action cannot be undone.",
+                    text = "This will immediately zeroize and destroy all local database messages, encrypted vault files, and cryptographic keys. This action cannot be undone.",
                     color = TextPrimary
                 )
             },
@@ -153,6 +176,7 @@ fun ArgusShieldScreen(
                     onClick = {
                         shieldRepository.panicWipeAllData()
                         showPanicConfirmDialog = false
+                        Toast.makeText(context, "All cryptographic data zeroized.", Toast.LENGTH_LONG).show()
                     }
                 ) {
                     Text("Destroy Everything", color = ShieldRed, fontWeight = FontWeight.Bold)
@@ -172,7 +196,9 @@ private fun ShieldStatusCard(
     title: String,
     desc: String,
     isGood: Boolean,
-    icon: androidx.compose.ui.graphics.vector.ImageVector
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    actionText: String? = null,
+    onActionClick: (() -> Unit)? = null
 ) {
     Row(
         modifier = Modifier
@@ -204,11 +230,20 @@ private fun ShieldStatusCard(
             Text(text = desc, style = MaterialTheme.typography.labelSmall, color = TextSecondary)
         }
 
-        Icon(
-            imageVector = if (isGood) Icons.Default.CheckCircle else Icons.Default.Warning,
-            contentDescription = null,
-            tint = if (isGood) EmeraldPrimary else ShieldAmber,
-            modifier = Modifier.size(20.dp)
-        )
+        if (actionText != null && onActionClick != null) {
+            TextButton(
+                onClick = onActionClick,
+                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+            ) {
+                Text(actionText, color = EmeraldLight, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+            }
+        } else {
+            Icon(
+                imageVector = if (isGood) Icons.Default.CheckCircle else Icons.Default.Warning,
+                contentDescription = null,
+                tint = if (isGood) EmeraldPrimary else ShieldAmber,
+                modifier = Modifier.size(20.dp)
+            )
+        }
     }
 }

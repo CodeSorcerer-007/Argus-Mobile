@@ -1,13 +1,21 @@
 package com.example.argus.ui.auth
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.animation.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -18,15 +26,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.argus.R
 import com.example.argus.theme.*
-import com.example.argus.ui.components.ArgusButton
+import com.example.argus.ui.components.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -178,9 +189,16 @@ fun PhoneAuthScreen(
     isLoading: Boolean = false,
     errorMessage: String? = null
 ) {
-    var phoneNumber by remember { mutableStateOf("+1 555 ") }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    var selectedCountryCode by remember { mutableStateOf("+91") }
+    var rawNumber by remember { mutableStateOf("") }
     var showServerDialog by remember { mutableStateOf(false) }
     var tempServerUrl by remember(currentServerUrl) { mutableStateOf(currentServerUrl) }
+
+    val fullPhoneNumber = remember(selectedCountryCode, rawNumber) {
+        val clean = rawNumber.filter { it.isDigit() }
+        "$selectedCountryCode$clean"
+    }
 
     if (showServerDialog) {
         AlertDialog(
@@ -254,10 +272,11 @@ fun PhoneAuthScreen(
             .background(ObsidianBlack)
             .statusBarsPadding()
             .navigationBarsPadding()
+            .imePadding()
             .padding(24.dp),
         verticalArrangement = Arrangement.SpaceBetween
     ) {
-        Column {
+        Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -282,7 +301,7 @@ fun PhoneAuthScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "Argus will send a verification code to register your cryptographic device key.",
+                text = "Argus will deliver a 6-digit SMS verification code to establish your zero-knowledge device keys.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = TextSecondary
             )
@@ -313,13 +332,61 @@ fun PhoneAuthScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(24.dp))
+            Spacer(modifier = Modifier.height(20.dp))
+
+            Text(
+                text = "Quick Country Code",
+                fontSize = 12.sp,
+                color = TextSecondary,
+                fontWeight = FontWeight.Medium
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            CountryCodeChips(
+                selectedCode = selectedCountryCode,
+                onSelectCode = { selectedCountryCode = it }
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
 
             OutlinedTextField(
-                value = phoneNumber,
-                onValueChange = { phoneNumber = it },
-                label = { Text("Phone Number (with country code)") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                value = rawNumber,
+                onValueChange = { input ->
+                    val trimmed = input.trim()
+                    if (trimmed.startsWith("+91")) {
+                        selectedCountryCode = "+91"
+                        rawNumber = trimmed.removePrefix("+91").filter { it.isDigit() }
+                    } else if (trimmed.startsWith("+1")) {
+                        selectedCountryCode = "+1"
+                        rawNumber = trimmed.removePrefix("+1").filter { it.isDigit() }
+                    } else if (trimmed.startsWith("+44")) {
+                        selectedCountryCode = "+44"
+                        rawNumber = trimmed.removePrefix("+44").filter { it.isDigit() }
+                    } else {
+                        rawNumber = trimmed.filter { it.isDigit() }
+                    }
+                },
+                label = { Text("Phone Number") },
+                prefix = {
+                    Text(
+                        text = "$selectedCountryCode ",
+                        color = EmeraldPrimary,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                },
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Phone,
+                    imeAction = ImeAction.Done
+                ),
+                keyboardActions = KeyboardActions(
+                    onDone = {
+                        if (fullPhoneNumber.length >= 8 && !isLoading) {
+                            keyboardController?.hide()
+                            onRequestOtp(fullPhoneNumber)
+                        }
+                    }
+                ),
+                singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
                 colors = OutlinedTextFieldDefaults.colors(
@@ -341,7 +408,7 @@ fun PhoneAuthScreen(
                 Icon(imageVector = Icons.Default.Security, contentDescription = null, tint = EmeraldLight, modifier = Modifier.size(16.dp))
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Your phone number is hashed before discovery.",
+                    text = "Phone numbers are hashed via SHA-256 before discovery.",
                     style = MaterialTheme.typography.labelSmall,
                     color = TextSecondary
                 )
@@ -349,9 +416,13 @@ fun PhoneAuthScreen(
         }
 
         ArgusButton(
-            text = if (isLoading) "Requesting Code..." else "Continue",
-            onClick = { onRequestOtp(phoneNumber) },
-            enabled = phoneNumber.trim().length >= 8 && !isLoading
+            text = if (isLoading) "Sending SMS Code..." else "Send SMS Verification Code",
+            onClick = {
+                keyboardController?.hide()
+                onRequestOtp(fullPhoneNumber)
+            },
+            enabled = fullPhoneNumber.length >= 8 && !isLoading,
+            icon = Icons.Default.Sms
         )
     }
 }
@@ -366,8 +437,18 @@ fun OtpVerifyScreen(
     isLoading: Boolean = false,
     errorMessage: String? = null
 ) {
-    var code by remember(initialCode) { mutableStateOf(initialCode) }
+    val context = LocalContext.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    var code by remember { mutableStateOf(initialCode) }
+    var showBanner by remember { mutableStateOf(initialCode.isNotBlank()) }
     var countdown by remember { mutableStateOf(45) }
+
+    LaunchedEffect(initialCode) {
+        if (initialCode.isNotBlank()) {
+            code = initialCode
+            showBanner = true
+        }
+    }
 
     LaunchedEffect(Unit) {
         while (countdown > 0) {
@@ -376,135 +457,237 @@ fun OtpVerifyScreen(
         }
     }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(ObsidianBlack)
             .statusBarsPadding()
             .navigationBarsPadding()
-            .padding(24.dp),
-        verticalArrangement = Arrangement.SpaceBetween
+            .imePadding()
     ) {
-        Column {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                IconButton(onClick = onBackClick) {
-                    Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = TextPrimary)
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(24.dp),
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onBackClick) {
+                        Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = TextPrimary)
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "SMS Verification",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = TextPrimary
+                    )
                 }
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    text = "Verification Code",
-                    style = MaterialTheme.typography.headlineMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = TextPrimary
-                )
-            }
 
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = "We sent a 6-digit code to $phoneNumber",
-                style = MaterialTheme.typography.bodyMedium,
-                color = TextSecondary
-            )
+                // Simulated / Dev SMS Heads-up Banner if dev code exists
+                if (showBanner && initialCode.isNotBlank()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    IncomingSmsNotificationBanner(
+                        code = initialCode,
+                        phoneNumber = phoneNumber,
+                        onAutoFillClick = {
+                            code = initialCode
+                            keyboardController?.hide()
+                            onVerifyOtp(initialCode)
+                        },
+                        onCopyClick = {
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("Argus OTP", initialCode))
+                            Toast.makeText(context, "Code copied: $initialCode", Toast.LENGTH_SHORT).show()
+                        },
+                        onDismiss = { showBanner = false }
+                    )
+                }
 
-            if (initialCode.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(12.dp))
+
+                // Real SMS Delivery Info Card
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(EmeraldPrimary.copy(alpha = 0.15f), RoundedCornerShape(12.dp))
-                        .border(1.dp, EmeraldPrimary.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
-                        .padding(12.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(ObsidianSurface)
+                        .border(1.dp, ObsidianBorder, RoundedCornerShape(14.dp))
+                        .padding(16.dp)
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.CheckCircle,
-                            contentDescription = null,
-                            tint = EmeraldPrimary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Verification code received: $initialCode (auto-filled)",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = EmeraldLight
-                        )
+                    Row(verticalAlignment = Alignment.Top) {
+                        Box(
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .background(EmeraldPrimary.copy(alpha = 0.15f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Sms,
+                                contentDescription = null,
+                                tint = EmeraldPrimary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = "Check your phone's Messages app",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "We've dispatched a 6-digit verification code via SMS text message to $phoneNumber.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary,
+                                lineHeight = 18.sp
+                            )
+                        }
                     }
                 }
-            }
 
-            if (errorMessage != null) {
-                Spacer(modifier = Modifier.height(16.dp))
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color(0xFF3B1818), RoundedCornerShape(12.dp))
-                        .border(1.dp, Color(0xFF8B2525), RoundedCornerShape(12.dp))
-                        .padding(12.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.ErrorOutline,
-                            contentDescription = null,
-                            tint = Color(0xFFFF6B6B),
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = errorMessage,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = Color(0xFFFFD1D1)
-                        )
+                if (errorMessage != null) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFF3B1818), RoundedCornerShape(12.dp))
+                            .border(1.dp, Color(0xFF8B2525), RoundedCornerShape(12.dp))
+                            .padding(12.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.ErrorOutline,
+                                contentDescription = null,
+                                tint = Color(0xFFFF6B6B),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = errorMessage,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color(0xFFFFD1D1)
+                            )
+                        }
                     }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(24.dp))
 
-            OutlinedTextField(
-                value = code,
-                onValueChange = { if (it.length <= 6) code = it },
-                label = { Text("6-Digit Code") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = EmeraldPrimary,
-                    unfocusedBorderColor = ObsidianBorder,
-                    focusedTextColor = TextPrimary,
-                    unfocusedTextColor = TextPrimary,
-                    focusedContainerColor = ObsidianSurface,
-                    unfocusedContainerColor = ObsidianSurface
-                ),
-                leadingIcon = {
-                    Icon(imageVector = Icons.Default.Key, contentDescription = null, tint = EmeraldPrimary)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "ENTER 6-DIGIT CODE",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = EmeraldLight,
+                        letterSpacing = 1.sp
+                    )
+
+                    if (initialCode.isNotBlank()) {
+                        Surface(
+                            color = EmeraldPrimary.copy(alpha = 0.15f),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.clickable {
+                                code = initialCode
+                                keyboardController?.hide()
+                                onVerifyOtp(initialCode)
+                            }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.FlashOn,
+                                    contentDescription = null,
+                                    tint = EmeraldPrimary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "Auto-fill: $initialCode",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = EmeraldLight,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
                 }
-            )
 
-            Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
-            if (countdown > 0) {
-                Text(
-                    text = "Resend code in ${countdown}s",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = TextMuted
+                // Interactive 6 individual OTP Pin Boxes
+                ArgusSixDigitPinInput(
+                    value = code,
+                    onValueChange = { code = it },
+                    onComplete = { completedCode ->
+                        if (!isLoading) {
+                            keyboardController?.hide()
+                            onVerifyOtp(completedCode)
+                        }
+                    }
                 )
-            } else {
-                TextButton(onClick = {
-                    countdown = 45
-                    onResendClick()
-                }) {
-                    Text(text = "Resend Code", color = EmeraldPrimary, fontWeight = FontWeight.Bold)
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Resend & Status Controls
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (countdown > 0) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Timer,
+                                contentDescription = null,
+                                tint = TextMuted,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Resend SMS in ${countdown}s",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TextMuted
+                            )
+                        }
+                    } else {
+                        TextButton(
+                            onClick = {
+                                countdown = 45
+                                onResendClick()
+                            },
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Icon(imageVector = Icons.Default.Refresh, contentDescription = null, tint = EmeraldPrimary, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(text = "Resend SMS Code", color = EmeraldPrimary, fontWeight = FontWeight.Bold)
+                        }
+                    }
                 }
             }
-        }
 
-        ArgusButton(
-            text = if (isLoading) "Verifying..." else "Verify & Continue",
-            onClick = { onVerifyOtp(code) },
-            enabled = code.length >= 4 && !isLoading
-        )
+            ArgusButton(
+                text = if (isLoading) "Verifying Identity..." else "Verify & Continue",
+                onClick = {
+                    keyboardController?.hide()
+                    onVerifyOtp(code)
+                },
+                enabled = code.length == 6 && !isLoading,
+                icon = Icons.Default.Check
+            )
+        }
     }
 }

@@ -9,6 +9,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import com.example.argus.AppContainer
 import com.example.argus.data.model.CallType
+import com.example.argus.data.model.Contact
 import com.example.argus.data.model.Conversation
 import com.example.argus.data.model.User
 import com.example.argus.theme.ObsidianBlack
@@ -18,9 +19,12 @@ import com.example.argus.ui.auth.PhoneAuthScreen
 import com.example.argus.ui.auth.WelcomeScreen
 import com.example.argus.ui.call.CallScreen
 import com.example.argus.ui.chat.ChatScreen
+import com.example.argus.ui.chat.ContactInfoScreen
 import com.example.argus.ui.main.MainScreen
 import com.example.argus.ui.security.SecurityVerificationScreen
 import com.example.argus.ui.settings.SettingsScreen
+import com.example.argus.ui.status.EphemeralStatusItem
+import com.example.argus.ui.status.FullScreenStatusViewer
 import com.example.argus.ui.vault.ArgusVaultScreen
 import com.example.argus.ui.shield.ArgusShieldScreen
 import kotlinx.coroutines.launch
@@ -31,6 +35,8 @@ sealed class Screen {
     data class OtpVerify(val phoneNumber: String, val suggestedCode: String = "") : Screen()
     object Main : Screen()
     data class Chat(val conversationId: String) : Screen()
+    data class ContactInfo(val contact: Contact) : Screen()
+    data class StatusViewer(val status: EphemeralStatusItem) : Screen()
     data class SecurityVerify(
         val peerName: String,
         val peerUserId: String,
@@ -59,14 +65,7 @@ fun ArgusNavGraph(container: AppContainer) {
     val calls by container.callRepository.callHistory.collectAsState()
     val activeCallState by container.callRepository.activeCallFlow.collectAsState()
 
-    var isAuthLoading by remember { mutableStateOf(false) }
-    var authErrorMessage by remember { mutableStateOf<String?>(null) }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(ObsidianBlack)
-    ) {
+    Box(modifier = Modifier.fillMaxSize().background(ObsidianBlack)) {
         when (val screen = currentScreen) {
             is Screen.Welcome -> {
                 WelcomeScreen(
@@ -75,85 +74,66 @@ fun ArgusNavGraph(container: AppContainer) {
             }
 
             is Screen.PhoneAuth -> {
-                BackHandler {
-                    currentScreen = Screen.Welcome
-                }
+                var isLoading by remember { mutableStateOf(false) }
+                var errorMsg by remember { mutableStateOf<String?>(null) }
+
                 PhoneAuthScreen(
                     currentServerUrl = container.preferences.getServerUrl(),
                     onSaveServerUrl = { newUrl ->
                         container.preferences.setServerUrl(newUrl)
-                        authErrorMessage = null
                     },
                     onRequestOtp = { phone ->
-                        isAuthLoading = true
-                        authErrorMessage = null
+                        isLoading = true
+                        errorMsg = null
                         coroutineScope.launch {
                             try {
-                                val resp = container.authRepository.requestOtp(phone)
-                                isAuthLoading = false
-                                if (resp.success) {
-                                    authErrorMessage = null
-                                    val code = resp.code ?: resp.devCode ?: if (phone.endsWith("0000")) "000000" else ""
-                                    currentScreen = Screen.OtpVerify(phoneNumber = phone, suggestedCode = code)
+                                val otpResp = container.authRepository.requestOtp(phone)
+                                isLoading = false
+                                if (otpResp.success) {
+                                    val code = otpResp.code ?: otpResp.devCode ?: ""
+                                    currentScreen = Screen.OtpVerify(phone, code)
                                 } else {
-                                    authErrorMessage = resp.error ?: "Cannot reach server. Please check your internet connection."
+                                    errorMsg = otpResp.message ?: "Failed to request OTP"
                                 }
                             } catch (e: Exception) {
-                                isAuthLoading = false
-                                authErrorMessage = "Connection failed: ${e.localizedMessage ?: "Unknown network error"}"
+                                isLoading = false
+                                errorMsg = e.localizedMessage ?: "Failed to request OTP"
                             }
                         }
                     },
-                    isLoading = isAuthLoading,
-                    errorMessage = authErrorMessage
+                    isLoading = isLoading,
+                    errorMessage = errorMsg
                 )
             }
 
             is Screen.OtpVerify -> {
-                BackHandler {
-                    authErrorMessage = null
-                    currentScreen = Screen.PhoneAuth
-                }
+                var isLoading by remember { mutableStateOf(false) }
+                var errorMsg by remember { mutableStateOf<String?>(null) }
+
                 OtpVerifyScreen(
                     phoneNumber = screen.phoneNumber,
                     initialCode = screen.suggestedCode,
                     onVerifyOtp = { code ->
-                        isAuthLoading = true
-                        authErrorMessage = null
+                        isLoading = true
+                        errorMsg = null
                         coroutineScope.launch {
-                            try {
-                                val result = container.authRepository.verifyOtp(screen.phoneNumber, code)
-                                isAuthLoading = false
-                                if (result.isSuccess) {
-                                    authErrorMessage = null
-                                    currentScreen = Screen.Main
-                                } else {
-                                    authErrorMessage = result.exceptionOrNull()?.localizedMessage ?: "Verification failed. Check the code."
-                                }
-                            } catch (e: Exception) {
-                                isAuthLoading = false
-                                authErrorMessage = "Authentication error: ${e.localizedMessage}"
+                            val res = container.authRepository.verifyOtp(screen.phoneNumber, code)
+                            isLoading = false
+                            if (res.isSuccess) {
+                                currentScreen = Screen.Main
+                            } else {
+                                errorMsg = res.exceptionOrNull()?.localizedMessage ?: "Verification failed"
                             }
                         }
                     },
                     onResendClick = {
                         coroutineScope.launch {
-                            try {
-                                val resp = container.authRepository.requestOtp(screen.phoneNumber)
-                                if (!resp.success) {
-                                    authErrorMessage = resp.error ?: "Failed to resend code."
-                                }
-                            } catch (e: Exception) {
-                                authErrorMessage = "Resend error: ${e.localizedMessage}"
-                            }
+                            container.authRepository.requestOtp(screen.phoneNumber)
                         }
                     },
-                    onBackClick = {
-                        authErrorMessage = null
-                        currentScreen = Screen.PhoneAuth
-                    },
-                    isLoading = isAuthLoading,
-                    errorMessage = authErrorMessage
+                    onBackClick = { currentScreen = Screen.PhoneAuth },
+                    isLoading = isLoading,
+                    errorMessage = errorMsg
                 )
             }
 
@@ -164,23 +144,20 @@ fun ArgusNavGraph(container: AppContainer) {
                     calls = calls,
                     authRepository = container.authRepository,
                     onConversationClick = { convId ->
-                        container.localStore.loadMessagesForConversation(convId)
                         currentScreen = Screen.Chat(convId)
                     },
                     onContactClick = { contact ->
-                        val convId = "conv_${contact.userId}"
-                        val existing = conversations.firstOrNull { it.id == convId }
-                        if (existing == null) {
-                            val newConv = Conversation(
-                                id = convId,
-                                title = contact.displayName,
-                                participantIds = listOf(contact.userId),
-                                avatarUrl = contact.avatarUrl
+                        coroutineScope.launch {
+                            val convId = container.authRepository.startConversationWithUser(
+                                User(
+                                    id = contact.userId,
+                                    phoneNumber = contact.phoneNumber,
+                                    displayName = contact.displayName,
+                                    username = contact.username
+                                )
                             )
-                            container.localStore.upsertConversation(newConv)
+                            currentScreen = Screen.Chat(convId)
                         }
-                        container.localStore.loadMessagesForConversation(convId)
-                        currentScreen = Screen.Chat(convId)
                     },
                     onStartCallClick = { contact, callType ->
                         container.callRepository.initiateCall(
@@ -194,7 +171,67 @@ fun ArgusNavGraph(container: AppContainer) {
                     onVaultClick = { currentScreen = Screen.Vault },
                     onShieldClick = { currentScreen = Screen.Shield },
                     onSettingsClick = { currentScreen = Screen.Settings },
-                    onAiAssistantClick = { currentScreen = Screen.AiAssistant }
+                    onAiAssistantClick = { currentScreen = Screen.AiAssistant },
+                    onViewStatus = { status -> currentScreen = Screen.StatusViewer(status) }
+                )
+            }
+
+            is Screen.StatusViewer -> {
+                BackHandler {
+                    currentScreen = Screen.Main
+                }
+                FullScreenStatusViewer(
+                    status = screen.status,
+                    onClose = { currentScreen = Screen.Main }
+                )
+            }
+
+            is Screen.ContactInfo -> {
+                BackHandler {
+                    currentScreen = Screen.Main
+                }
+                ContactInfoScreen(
+                    contact = screen.contact,
+                    onBackClick = { currentScreen = Screen.Main },
+                    onStartMessageClick = {
+                        coroutineScope.launch {
+                            val convId = container.authRepository.startConversationWithUser(
+                                User(
+                                    id = screen.contact.userId,
+                                    phoneNumber = screen.contact.phoneNumber,
+                                    displayName = screen.contact.displayName,
+                                    username = screen.contact.username
+                                )
+                            )
+                            currentScreen = Screen.Chat(convId)
+                        }
+                    },
+                    onStartAudioCallClick = {
+                        container.callRepository.initiateCall(
+                            peerId = screen.contact.userId,
+                            peerName = screen.contact.displayName,
+                            peerAvatar = screen.contact.avatarUrl,
+                            callType = CallType.VOICE
+                        )
+                        currentScreen = Screen.Call
+                    },
+                    onStartVideoCallClick = {
+                        container.callRepository.initiateCall(
+                            peerId = screen.contact.userId,
+                            peerName = screen.contact.displayName,
+                            peerAvatar = screen.contact.avatarUrl,
+                            callType = CallType.VIDEO
+                        )
+                        currentScreen = Screen.Call
+                    },
+                    onVerifySafetyNumberClick = {
+                        currentScreen = Screen.SecurityVerify(
+                            peerName = screen.contact.displayName,
+                            peerUserId = screen.contact.userId,
+                            peerIdentityKey = screen.contact.identityKeyBase64 ?: "",
+                            isVerified = screen.contact.isVerified
+                        )
+                    }
                 )
             }
 
@@ -247,9 +284,18 @@ fun ArgusNavGraph(container: AppContainer) {
                         currentScreen = Screen.SecurityVerify(
                             peerName = conv.title,
                             peerUserId = recipientId,
-                            peerIdentityKey = contact?.identityKeyBase64 ?: "mock_peer_key",
+                            peerIdentityKey = contact?.identityKeyBase64 ?: "",
                             isVerified = contact?.isVerified ?: false
                         )
+                    },
+                    onContactInfoClick = {
+                        val contact = contacts.firstOrNull { it.userId == recipientId } ?: Contact(
+                            id = "c_$recipientId",
+                            userId = recipientId,
+                            displayName = conv.title,
+                            phoneNumber = "+1 555 000 0000"
+                        )
+                        currentScreen = Screen.ContactInfo(contact)
                     },
                     onReactionClick = { msg, emoji ->
                         container.messageRepository.addReaction(msg, emoji)

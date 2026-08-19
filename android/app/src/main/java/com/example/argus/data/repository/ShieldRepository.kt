@@ -49,9 +49,6 @@ class ShieldRepository(
             score -= 15
             issues.add("$unverifiedCount contact(s) have unverified 60-digit Safety Numbers")
         }
-        if (!preferences.isReadReceiptsEnabled()) {
-            // Read receipts disabled increases privacy score
-        }
 
         return ShieldSecurityStatus(
             privacyScore = score.coerceIn(0, 100),
@@ -65,6 +62,16 @@ class ShieldRepository(
             activeDevicesCount = 1,
             issuesFound = issues
         )
+    }
+
+    fun toggleAppLock(enabled: Boolean) {
+        preferences.setAppLockEnabled(enabled)
+        refresh()
+    }
+
+    fun toggleBiometric(enabled: Boolean) {
+        preferences.setBiometricEnabled(enabled)
+        refresh()
     }
 
     fun triggerEmergencyLockdown() {

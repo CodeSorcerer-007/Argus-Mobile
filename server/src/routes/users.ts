@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { ArgusDatabase } from '../db/database';
+import { notificationService } from '../services/notificationService';
 
 const profileUpdateSchema = z.object({
   displayName: z.string().trim().min(1).max(60).optional(),
@@ -153,7 +154,6 @@ export function createUsersRouter(db: ArgusDatabase): Router {
       return;
     }
 
-    const { notificationService } = require('../services/notificationService');
     notificationService.registerToken(userId, token.trim());
     res.json({ success: true, message: 'Push token registered' });
   });

@@ -12,11 +12,11 @@ const phoneSchema = z.string().trim().regex(/^\+[1-9]\d{6,14}$/, {
 });
 
 const verifySchema = z.object({
-  phoneNumber: z.string().trim().regex(/^\+[1-9]\d{6,14}$/),
+  phoneNumber: z.string().trim().regex(/^\+[1-9]\d{6,14}$/, { message: 'Phone number must be in valid international E.164 format' }),
   code: z.string().trim().regex(/^\d{6}$/, { message: 'Code must be a 6-digit numeric string' }),
   deviceName: z.string().trim().max(100).optional(),
   platform: z.string().trim().max(50).optional(),
-  identityKeyBase64: z.string().trim().min(10),
+  identityKeyBase64: z.string().trim().min(20).max(128).regex(/^[A-Za-z0-9+/=_-]+$/, { message: 'Identity key must be valid Base64' }),
   displayName: z.string().trim().max(60).optional()
 });
 
@@ -54,8 +54,11 @@ export function createAuthRouter(db: ArgusDatabase, jwtSecret: string): Router {
 
     db.otps.set(phoneNumber, { code, expiresAt, phoneHash });
 
-    // Send real SMS if Twilio credentials are configured
+    // Send real SMS if Twilio or custom SMS Gateway credentials are configured
     let smsDispatched = false;
+    let smsProvider = '';
+
+    // 1. Check Twilio (Global SMS)
     if (twilioClient && process.env.TWILIO_PHONE_NUMBER && !isSandboxTestNumber) {
       try {
         await twilioClient.messages.create({
@@ -64,19 +67,120 @@ export function createAuthRouter(db: ArgusDatabase, jwtSecret: string): Router {
           to: phoneNumber
         });
         smsDispatched = true;
+        smsProvider = 'Twilio';
+        console.log(`[SMS Gateway] Dispatched cellular SMS to ${phoneNumber} via Twilio`);
       } catch (smsError: any) {
-        console.error('Twilio SMS dispatch failed:', smsError.message);
+        console.error('[SMS Gateway] Twilio SMS dispatch failed:', smsError.message);
+      }
+    }
+    // 2. Check Fast2SMS (Instant Indian Cellular SMS)
+    else if (process.env.FAST2SMS_API_KEY && !isSandboxTestNumber) {
+      try {
+        const clean10Digits = phoneNumber.replace(/^\+91/, '').replace(/\D/g, '').slice(-10);
+        const isIndianNumber = phoneNumber.startsWith('+91') || (clean10Digits.length === 10 && /^[6-9]/.test(clean10Digits));
+
+        if (isIndianNumber) {
+          // Fast2SMS Quick SMS Route (No website verification needed)
+          const quickSmsPayload = {
+            route: 'q',
+            message: `Your Argus verification code is ${code}. Valid for 5 minutes. Do not share this code.`,
+            language: 'english',
+            flash: 0,
+            numbers: clean10Digits
+          };
+
+          let response = await fetch('https://www.fast2sms.com/dev/bulkV2', {
+            method: 'POST',
+            headers: {
+              'authorization': process.env.FAST2SMS_API_KEY.trim(),
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(quickSmsPayload)
+          });
+
+          let result: any = await response.json().catch(() => ({}));
+
+          // If Quick SMS route returned success
+          if (response.ok && (result.return === true || result.status_code === 200 || result.return_code === 200)) {
+            smsDispatched = true;
+            smsProvider = 'Fast2SMS';
+            console.log(`[SMS Gateway] Dispatched cellular SMS to ${clean10Digits} via Fast2SMS (${result.message?.[0] || 'Success'})`);
+          } else {
+            // Fallback to OTP route
+            const otpPayload = {
+              variables_values: code,
+              route: 'otp',
+              numbers: clean10Digits
+            };
+            response = await fetch('https://www.fast2sms.com/dev/bulkV2', {
+              method: 'POST',
+              headers: {
+                'authorization': process.env.FAST2SMS_API_KEY.trim(),
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify(otpPayload)
+            });
+            result = await response.json().catch(() => ({}));
+            if (response.ok && (result.return === true || result.status_code === 200 || result.return_code === 200)) {
+              smsDispatched = true;
+              smsProvider = 'Fast2SMS (OTP Route)';
+              console.log(`[SMS Gateway] Dispatched cellular SMS to ${clean10Digits} via Fast2SMS (${result.message?.[0] || 'Success'})`);
+            } else {
+              console.error(`[SMS Gateway] Fast2SMS returned response:`, result.message || result);
+            }
+          }
+        } else {
+          console.warn(`[SMS Gateway] Fast2SMS only supports Indian (+91) mobile numbers. Skipping Fast2SMS for ${phoneNumber}`);
+        }
+      } catch (f2sError: any) {
+        console.error('[SMS Gateway] Fast2SMS connection error:', f2sError.message);
+      }
+    }
+    // 3. Check Generic SMS Gateway URL
+    else if (process.env.SMS_GATEWAY_URL && !isSandboxTestNumber) {
+      try {
+        const payload = {
+          to: phoneNumber,
+          message: `Your Argus verification code is: ${code}. Valid for 5 minutes.`,
+          code: code,
+          apiKey: process.env.SMS_GATEWAY_API_KEY || ''
+        };
+        const response = await fetch(process.env.SMS_GATEWAY_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(process.env.SMS_GATEWAY_API_KEY ? { 'Authorization': `Bearer ${process.env.SMS_GATEWAY_API_KEY}` } : {})
+          },
+          body: JSON.stringify(payload)
+        });
+        if (response.ok) {
+          smsDispatched = true;
+          smsProvider = 'Custom SMS Gateway';
+          console.log(`[SMS Gateway] Dispatched cellular SMS to ${phoneNumber} via custom SMS Gateway`);
+        } else {
+          console.error(`[SMS Gateway] Custom SMS gateway returned status ${response.status}`);
+        }
+      } catch (gatewayError: any) {
+        console.error('[SMS Gateway] Custom SMS gateway error:', gatewayError.message);
       }
     }
 
-    const isProductionWithSms = process.env.NODE_ENV === 'production' && smsDispatched;
+    if (!smsDispatched && !isSandboxTestNumber) {
+      console.log(`\n======================================================`);
+      console.log(`[Argus SMS Service] Generated OTP for ${phoneNumber}: ${code}`);
+      console.log(`[Argus SMS Service] Real cellular SMS delivery requires:`);
+      console.log(`  Option 1 (Fast2SMS - India): FAST2SMS_API_KEY in server/.env`);
+      console.log(`  Option 2 (Twilio - Global): TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER`);
+      console.log(`======================================================\n`);
+    }
+
+    const isDev = process.env.NODE_ENV === 'development' || process.env.ENABLE_DEV_OTP === 'true';
 
     res.json({
       success: true,
-      message: smsDispatched ? 'Verification code sent via SMS' : 'OTP generated successfully',
+      message: smsDispatched ? `Verification code sent via SMS (${smsProvider})` : 'OTP generated and dispatched',
       expiresInSec: 300,
-      code: isProductionWithSms ? undefined : code,
-      devCode: isProductionWithSms ? undefined : code
+      ...(isDev ? { devCode: code } : {})
     });
   });
 
@@ -201,7 +305,7 @@ export function createAuthRouter(db: ArgusDatabase, jwtSecret: string): Router {
   });
 
   /**
-   * Refresh expired access token using refresh token
+   * Refresh expired access token using refresh token (with Refresh Token Rotation)
    */
   router.post('/refresh-token', (req: Request, res: Response): void => {
     const { refreshToken } = req.body;
@@ -211,7 +315,7 @@ export function createAuthRouter(db: ArgusDatabase, jwtSecret: string): Router {
     }
 
     if (db.revokedTokens.has(refreshToken)) {
-      res.status(401).json({ error: 'Token has been revoked' });
+      res.status(401).json({ error: 'Token has been revoked or already used' });
       return;
     }
 
@@ -228,15 +332,32 @@ export function createAuthRouter(db: ArgusDatabase, jwtSecret: string): Router {
       return;
     }
 
+    // Refresh Token Rotation (RTR): Invalidate old refresh token to prevent replay attacks
+    db.refreshTokens.delete(refreshToken);
+    db.revokedTokens.add(refreshToken);
+
+    // Issue new access token
     const newToken = jwt.sign(
       { userId: user.id, deviceId: record.deviceId, phoneNumber: user.phoneNumber },
       jwtSecret,
       { expiresIn: '7d' }
     );
 
+    // Issue new rotated refresh token
+    const newRefreshToken = uuidv4() + '.' + crypto.randomBytes(32).toString('hex');
+    db.refreshTokens.set(newRefreshToken, {
+      token: newRefreshToken,
+      userId: user.id,
+      deviceId: record.deviceId,
+      expiresAt: Date.now() + 90 * 24 * 60 * 60 * 1000
+    });
+
+    db.save();
+
     res.json({
       success: true,
-      token: newToken
+      token: newToken,
+      refreshToken: newRefreshToken
     });
   });
 

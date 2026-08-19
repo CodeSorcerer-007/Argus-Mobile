@@ -17,6 +17,8 @@ export class ArgusWebSocketManager {
   // userId -> Set<AuthenticatedSocket>
   private userSockets: Map<string, Set<AuthenticatedSocket>> = new Map();
 
+  private heartbeatInterval: NodeJS.Timeout;
+
   constructor(server: HttpServer, db: ArgusDatabase, jwtSecret: string) {
     this.db = db;
     this.jwtSecret = jwtSecret;
@@ -44,7 +46,7 @@ export class ArgusWebSocketManager {
     });
 
     // Heartbeat liveness check every 30 seconds
-    setInterval(() => {
+    this.heartbeatInterval = setInterval(() => {
       this.wss.clients.forEach((ws: WebSocket) => {
         const socket = ws as AuthenticatedSocket;
         if (socket.isAlive === false) {
@@ -54,6 +56,14 @@ export class ArgusWebSocketManager {
         socket.ping();
       });
     }, 30000);
+  }
+
+  public close(): void {
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+    }
+    this.userSockets.clear();
+    this.wss.close();
   }
 
   private handleClientEvent(ws: AuthenticatedSocket, event: WsClientEvent): void {

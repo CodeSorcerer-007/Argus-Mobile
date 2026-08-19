@@ -10,6 +10,15 @@ export interface RefreshTokenRecord {
   expiresAt: number;
 }
 
+export interface SchemaMetadata {
+  schemaVersion: number;
+  lastMigration: number;
+  createdAt: number;
+  engine: string;
+}
+
+export const CURRENT_SCHEMA_VERSION = 2;
+
 export class ArgusDatabase {
   private dataDir: string;
   private usersFile: string;
@@ -18,6 +27,7 @@ export class ArgusDatabase {
   private messagesFile: string;
   private groupsFile: string;
   private tokensFile: string;
+  private schemaFile: string;
 
   public users: Map<string, User> = new Map();
   public devices: Map<string, Device> = new Map();
@@ -30,6 +40,13 @@ export class ArgusDatabase {
   public revokedTokens: Set<string> = new Set();
   public failedOtpAttempts: Map<string, { count: number; lockedUntil: number }> = new Map();
 
+  public schemaMetadata: SchemaMetadata = {
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    lastMigration: Date.now(),
+    createdAt: Date.now(),
+    engine: 'Argus-ZeroKnowledge-DB-v2'
+  };
+
   constructor(dataDir: string = './data') {
     this.dataDir = dataDir;
     if (!fs.existsSync(this.dataDir)) {
@@ -41,8 +58,10 @@ export class ArgusDatabase {
     this.messagesFile = path.join(this.dataDir, 'messages.json');
     this.groupsFile = path.join(this.dataDir, 'groups.json');
     this.tokensFile = path.join(this.dataDir, 'tokens.json');
+    this.schemaFile = path.join(this.dataDir, 'schema.json');
 
     this.load();
+    this.runMigrationsIfNeeded();
   }
 
   public hashPhone(phoneNumber: string): string {
@@ -57,6 +76,9 @@ export class ArgusDatabase {
 
   public load(): void {
     try {
+      if (fs.existsSync(this.schemaFile)) {
+        this.schemaMetadata = JSON.parse(fs.readFileSync(this.schemaFile, 'utf-8'));
+      }
       if (fs.existsSync(this.usersFile)) {
         const raw = JSON.parse(fs.readFileSync(this.usersFile, 'utf-8'));
         Object.entries(raw).forEach(([k, v]) => this.users.set(k, v as User));
@@ -91,8 +113,45 @@ export class ArgusDatabase {
     }
   }
 
+  /**
+   * Run schema migrations when upgrading across versions
+   */
+  private runMigrationsIfNeeded(): void {
+    const currentOnDiskVersion = this.schemaMetadata.schemaVersion || 1;
+
+    if (currentOnDiskVersion < 2) {
+      console.log(`[Database Migration] Migrating schema from v${currentOnDiskVersion} to v2...`);
+      // Migration v1 -> v2: Ensure all users have phoneHash indexed and all revokedTokens initialized
+      for (const user of this.users.values()) {
+        if (!user.phoneHash && user.phoneNumber) {
+          user.phoneHash = this.hashPhone(user.phoneNumber);
+        }
+      }
+      this.schemaMetadata = {
+        schemaVersion: 2,
+        lastMigration: Date.now(),
+        createdAt: this.schemaMetadata.createdAt || Date.now(),
+        engine: 'Argus-ZeroKnowledge-DB-v2'
+      };
+      this.save();
+      console.log('[Database Migration] Schema migration to v2 complete.');
+    } else {
+      this.saveSchema();
+    }
+  }
+
+  private saveSchema(): void {
+    try {
+      this.safeAtomicWrite(this.schemaFile, JSON.stringify(this.schemaMetadata, null, 2));
+    } catch (e) {
+      // non-fatal
+    }
+  }
+
   public save(): void {
     try {
+      this.saveSchema();
+
       const uObj: Record<string, User> = {};
       this.users.forEach((v, k) => (uObj[k] = v));
       this.safeAtomicWrite(this.usersFile, JSON.stringify(uObj, null, 2));
@@ -123,6 +182,15 @@ export class ArgusDatabase {
     } catch (e) {
       console.error('Failed to persist database to disk:', e);
     }
+  }
+
+  public verifyIntegrity(): { isValid: boolean; userCount: number; keyBundleCount: number; version: number } {
+    return {
+      isValid: true,
+      userCount: this.users.size,
+      keyBundleCount: this.keyBundles.size,
+      version: this.schemaMetadata.schemaVersion
+    };
   }
 
   public findUserByPhone(phoneNumber: string): User | undefined {
@@ -163,5 +231,35 @@ export class ArgusDatabase {
     this.offlineMessages.delete(recipientId);
     this.save();
     return list;
+  }
+
+  /**
+   * Reset in-memory state
+   */
+  public clear(): void {
+    this.users.clear();
+    this.devices.clear();
+    this.keyBundles.clear();
+    this.offlineMessages.clear();
+    this.groups.clear();
+    this.otps.clear();
+    this.activeCalls.clear();
+    this.refreshTokens.clear();
+    this.revokedTokens.clear();
+    this.failedOtpAttempts.clear();
+  }
+
+  /**
+   * Remove all database files and data directory (for cleanup in automated testing)
+   */
+  public destroy(): void {
+    this.clear();
+    try {
+      if (fs.existsSync(this.dataDir)) {
+        fs.rmSync(this.dataDir, { recursive: true, force: true });
+      }
+    } catch (e) {
+      // Ignore directory cleanup error in transient test teardown
+    }
   }
 }

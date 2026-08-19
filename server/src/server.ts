@@ -17,12 +17,22 @@ import { ArgusWebSocketManager } from './ws/wsManager';
 dotenv.config();
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
-const JWT_SECRET = process.env.JWT_SECRET || 'argus_super_secret_jwt_key_2026_production_change_in_prod';
+const DEFAULT_JWT_SECRET = 'argus_super_secret_jwt_key_2026_production_change_in_prod';
+const JWT_SECRET = process.env.JWT_SECRET || DEFAULT_JWT_SECRET;
 const DATA_DIR = process.env.DATA_DIR || './data';
 const UPLOAD_DIR = process.env.UPLOAD_DIR || './uploads';
 
-export function createApp(db: ArgusDatabase) {
+// Production safety check: Prevent starting with insecure or default JWT secret
+if (process.env.NODE_ENV === 'production') {
+  if (!process.env.JWT_SECRET || process.env.JWT_SECRET === DEFAULT_JWT_SECRET || process.env.JWT_SECRET.length < 32) {
+    console.error('FATAL: In production mode, JWT_SECRET environment variable must be set to a secure key of at least 32 characters.');
+    process.exit(1);
+  }
+}
+
+export function createApp(db: ArgusDatabase, customJwtSecret?: string) {
   const app = express();
+  const JWT_SECRET = customJwtSecret || process.env.JWT_SECRET || DEFAULT_JWT_SECRET;
 
   // 1. Security Headers (Helmet)
   app.use(helmet({
@@ -30,9 +40,13 @@ export function createApp(db: ArgusDatabase) {
     crossOriginResourcePolicy: { policy: 'cross-origin' }
   }));
 
-  // 2. CORS Policy (Configured for Mobile Clients)
+  // 2. CORS Policy (Configured for Mobile & Web Clients)
+  const allowedOrigins = process.env.CORS_ORIGIN 
+    ? process.env.CORS_ORIGIN.split(',').map(s => s.trim()) 
+    : '*';
+
   app.use(cors({
-    origin: '*',
+    origin: allowedOrigins,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Range']
   }));
@@ -105,7 +119,17 @@ export function createApp(db: ArgusDatabase) {
   app.use('/api/users', authMiddleware, createUsersRouter(db));
   app.use('/api/groups', authMiddleware, createGroupsRouter(db));
   app.use('/api/calls', authMiddleware, createCallsRouter());
-  app.use('/api/media', createMediaRouter(UPLOAD_DIR));
+  app.use('/api/media', createMediaRouter(UPLOAD_DIR, authMiddleware));
+
+  // Global Centralized Error Handling Middleware
+  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+    if (process.env.NODE_ENV !== 'test') {
+      console.error('[Unhandled Error]', err);
+    }
+    res.status(err.status || 500).json({
+      error: err.message || 'Internal server error'
+    });
+  });
 
   return app;
 }
@@ -118,10 +142,17 @@ export function startServer() {
   const wsManager = new ArgusWebSocketManager(server, db, JWT_SECRET);
 
   server.listen(PORT, '0.0.0.0', () => {
+    const smsStatus = process.env.FAST2SMS_API_KEY 
+      ? 'Fast2SMS Cellular Gateway (Active 🚀)' 
+      : process.env.TWILIO_ACCOUNT_SID 
+      ? 'Twilio SMS Gateway (Active 🚀)' 
+      : 'Local Developer Console';
+
     console.log(`=========================================`);
     console.log(`  Argus E2EE Production Gateway Running  `);
     console.log(`  HTTP API:  http://0.0.0.0:${PORT}      `);
     console.log(`  WebSocket: ws://0.0.0.0:${PORT}/ws     `);
+    console.log(`  SMS Mode:  ${smsStatus}                `);
     console.log(`  Health:    http://0.0.0.0:${PORT}/health`);
     console.log(`=========================================`);
   });
