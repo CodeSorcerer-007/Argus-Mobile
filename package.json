@@ -1,0 +1,15 @@
+{
+  "name": "argus-mobile-workspace",
+  "version": "1.0.0",
+  "description": "Argus Zero-Knowledge End-to-End Encrypted Mobile Platform",
+  "private": true,
+  "scripts": {
+    "build": "npm --prefix server install && npm --prefix server run build",
+    "start": "npm --prefix server start",
+    "server": "npm --prefix server start",
+    "test": "npm --prefix server test"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

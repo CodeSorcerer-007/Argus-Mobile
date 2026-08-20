@@ -266,7 +266,16 @@ fun ArgusAuthScreen(
                         )
                     )
                     Spacer(modifier = Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        TextButton(
+                            onClick = { tempServerUrl = "https://argus-backend-server.onrender.com" },
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Text("Render Cloud", fontSize = 12.sp, color = EmeraldLight)
+                        }
                         TextButton(
                             onClick = { tempServerUrl = "http://10.0.2.2:8080" },
                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)

@@ -1,0 +1,27 @@
+# Render.com Blueprint Configuration for Argus E2EE Gateway Server
+# https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: argus-backend-server
+    runtime: node
+    plan: free
+    region: oregon
+    rootDir: server
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DATA_DIR
+        value: ./data
+      - key: UPLOAD_DIR
+        value: ./uploads
+      - key: CORS_ORIGIN
+        value: "*"

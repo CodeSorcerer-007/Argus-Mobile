@@ -18,21 +18,24 @@ dotenv.config();
 
 const PORT = parseInt(process.env.PORT || '8080', 10);
 const DEFAULT_JWT_SECRET = 'argus_super_secret_jwt_key_2026_production_change_in_prod';
-const JWT_SECRET = process.env.JWT_SECRET || DEFAULT_JWT_SECRET;
+let JWT_SECRET = process.env.JWT_SECRET || DEFAULT_JWT_SECRET;
 const DATA_DIR = process.env.DATA_DIR || './data';
 const UPLOAD_DIR = process.env.UPLOAD_DIR || './uploads';
 
-// Production safety check: Prevent starting with insecure or default JWT secret
-if (process.env.NODE_ENV === 'production') {
-  if (!process.env.JWT_SECRET || process.env.JWT_SECRET === DEFAULT_JWT_SECRET || process.env.JWT_SECRET.length < 32) {
-    console.error('FATAL: In production mode, JWT_SECRET environment variable must be set to a secure key of at least 32 characters.');
-    process.exit(1);
+// Production fallback: Ensure JWT secret is secure on cloud environments like Render
+if (!process.env.JWT_SECRET || process.env.JWT_SECRET === DEFAULT_JWT_SECRET) {
+  if (process.env.NODE_ENV === 'production') {
+    console.warn('[Security Notice] No custom JWT_SECRET specified. Generating an ephemeral high-entropy key for this session.');
+    JWT_SECRET = require('crypto').randomBytes(32).toString('hex');
   }
 }
 
 export function createApp(db: ArgusDatabase, customJwtSecret?: string) {
   const app = express();
-  const JWT_SECRET = customJwtSecret || process.env.JWT_SECRET || DEFAULT_JWT_SECRET;
+  const activeJwtSecret = customJwtSecret || JWT_SECRET;
+
+  // Render & Reverse Proxy support (Trust first proxy for correct client IP detection in rate limiting)
+  app.set('trust proxy', 1);
 
   // 1. Security Headers (Helmet)
   app.use(helmet({
@@ -105,7 +108,7 @@ export function createApp(db: ArgusDatabase, customJwtSecret?: string) {
 
     const token = authHeader.substring(7);
     try {
-      const decoded = jwt.verify(token, JWT_SECRET);
+      const decoded = jwt.verify(token, activeJwtSecret);
       (req as any).user = decoded;
       next();
     } catch (err) {
@@ -114,7 +117,7 @@ export function createApp(db: ArgusDatabase, customJwtSecret?: string) {
   };
 
   // Mount API Routers
-  app.use('/api/auth', authRateLimiter, createAuthRouter(db, JWT_SECRET));
+  app.use('/api/auth', authRateLimiter, createAuthRouter(db, activeJwtSecret));
   app.use('/api/keys', authMiddleware, createKeysRouter(db));
   app.use('/api/users', authMiddleware, createUsersRouter(db));
   app.use('/api/groups', authMiddleware, createGroupsRouter(db));
