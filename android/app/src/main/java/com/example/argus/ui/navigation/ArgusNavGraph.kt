@@ -68,15 +68,19 @@ fun ArgusNavGraph(
 
     val coroutineScope = rememberCoroutineScope()
 
-    // Automatic Permissions Prompt on Startup
+    // Safe Permissions Prompt on Startup
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { }
 
     LaunchedEffect(Unit) {
-        val permissions = PermissionManager.getRequiredPermissions()
-        if (!PermissionManager.hasPermissions(context, permissions)) {
-            permissionLauncher.launch(permissions)
+        try {
+            val permissions = PermissionManager.getRequiredPermissions()
+            if (!PermissionManager.hasPermissions(context, permissions)) {
+                permissionLauncher.launch(permissions)
+            }
+        } catch (e: Throwable) {
+            android.util.Log.w("ArgusNavGraph", "Initial permission request error", e)
         }
     }
 

@@ -54,6 +54,13 @@ class ArgusApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        try {
+            val provider = org.bouncycastle.jce.provider.BouncyCastleProvider()
+            java.security.Security.removeProvider(provider.name)
+            java.security.Security.addProvider(provider)
+        } catch (e: Throwable) {
+            android.util.Log.w("ArgusApplication", "BouncyCastle provider registration warning", e)
+        }
         container = AppContainer(this)
     }
 

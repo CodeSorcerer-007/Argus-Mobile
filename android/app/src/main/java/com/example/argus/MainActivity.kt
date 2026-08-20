@@ -13,14 +13,22 @@ import com.example.argus.theme.ArgusTheme
 import com.example.argus.ui.navigation.ArgusNavGraph
 
 class MainActivity : FragmentActivity() {
-    lateinit var biometricManager: BiometricPromptManager
+    private var biometricManager: BiometricPromptManager? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        try {
+            enableEdgeToEdge()
+        } catch (e: Throwable) {
+            // Non-critical: Older OS fallback
+        }
 
         val appContainer = (application as ArgusApplication).container
-        biometricManager = BiometricPromptManager(this)
+        try {
+            biometricManager = BiometricPromptManager(this)
+        } catch (e: Throwable) {
+            android.util.Log.w("MainActivity", "BiometricManager initialization warning", e)
+        }
 
         setContent {
             ArgusTheme {
