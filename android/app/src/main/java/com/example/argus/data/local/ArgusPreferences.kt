@@ -101,6 +101,15 @@ class ArgusPreferences(context: Context) {
         prefs.edit().putString("signed_pre_key_pair", jsonStr).apply()
     }
 
+    fun getEmergencyRecoveryKey(): String? = prefs.getString("emergency_recovery_key", null)
+    fun setEmergencyRecoveryKey(key: String?) {
+        if (key == null) {
+            prefs.edit().remove("emergency_recovery_key").apply()
+        } else {
+            prefs.edit().putString("emergency_recovery_key", key).apply()
+        }
+    }
+
     fun getServerUrl(): String {
         return DEFAULT_SERVER_URL
     }

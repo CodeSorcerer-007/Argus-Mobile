@@ -22,6 +22,7 @@ describe('Argus Comprehensive Production Test Suite', () => {
   let aliceToken: string;
   let aliceRefreshToken: string;
   let aliceUserId: string;
+  let aliceRecoveryKey: string;
   const aliceUsername = 'alicesecurity';
   const alicePassword = 'SecurePassword123!';
   const aliceIdentityKey = 'AliceIdentityPublicKeyBase64SamplePayloadForArgus2026==';
@@ -51,22 +52,19 @@ describe('Argus Comprehensive Production Test Suite', () => {
     wsManager.close();
     server.close(() => {
       db.destroy();
-      if (fs.existsSync(testUploadDir)) {
-        fs.rmSync(testUploadDir, { recursive: true, force: true });
-      }
       done();
     });
   });
 
   // ===========================================================================
-  // 1. SYSTEM HEALTH & METRICS
+  // 1. HEALTH & METADATA
   // ===========================================================================
   describe('Health & Service Diagnostics', () => {
     test('GET /health returns 200 OK with gateway metadata', async () => {
       const res = await request(app).get('/health');
       expect(res.status).toBe(200);
       expect(res.body.status).toBe('ok');
-      expect(res.body.service).toBe('Argus E2EE Gateway');
+      expect(res.body.version).toBe('2.4.0');
       expect(res.body.uptimeSec).toBeDefined();
     });
 
@@ -103,12 +101,15 @@ describe('Argus Comprehensive Production Test Suite', () => {
       expect(res.body.success).toBe(true);
       expect(res.body.token).toBeDefined();
       expect(res.body.refreshToken).toBeDefined();
+      expect(res.body.recoveryKey).toBeDefined();
+      expect(res.body.recoveryKey).toMatch(/^ARGUS-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/);
       expect(res.body.user.username).toBe(aliceUsername);
       expect(res.body.user.displayName).toBe('Alice Security');
 
       aliceToken = res.body.token;
       aliceRefreshToken = res.body.refreshToken;
       aliceUserId = res.body.user.id;
+      aliceRecoveryKey = res.body.recoveryKey;
     });
 
     test('POST /api/auth/register rejects duplicate username', async () => {
@@ -221,6 +222,60 @@ describe('Argus Comprehensive Production Test Suite', () => {
         .send({ refreshToken: aliceRefreshToken });
       expect(refreshRes.status).toBe(401);
       expect(refreshRes.body.error).toContain('revoked');
+    });
+
+    test('POST /api/auth/verify-recovery-key validates emergency recovery key', async () => {
+      // 1. Rejects invalid key
+      const badRes = await request(app)
+        .post('/api/auth/verify-recovery-key')
+        .send({
+          username: aliceUsername,
+          recoveryKey: 'ARGUS-9999-9999-9999-9999'
+        });
+      expect(badRes.status).toBe(400);
+      expect(badRes.body.error).toContain('Invalid recovery key');
+
+      // 2. Accepts valid key
+      const goodRes = await request(app)
+        .post('/api/auth/verify-recovery-key')
+        .send({
+          username: aliceUsername,
+          recoveryKey: aliceRecoveryKey
+        });
+      expect(goodRes.status).toBe(200);
+      expect(goodRes.body.valid).toBe(true);
+    });
+
+    test('POST /api/auth/reset-password resets password and issues fresh tokens & recovery key', async () => {
+      const newPassword = 'BrandNewSuperPassword999!';
+      const res = await request(app)
+        .post('/api/auth/reset-password')
+        .send({
+          username: aliceUsername,
+          newPassword,
+          recoveryKey: aliceRecoveryKey
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.token).toBeDefined();
+      expect(res.body.refreshToken).toBeDefined();
+      expect(res.body.recoveryKey).toBeDefined();
+      expect(res.body.recoveryKey).not.toBe(aliceRecoveryKey);
+
+      aliceToken = res.body.token;
+      aliceRefreshToken = res.body.refreshToken;
+
+      // Verify login with new password succeeds
+      const loginRes = await request(app)
+        .post('/api/auth/login')
+        .send({
+          username: aliceUsername,
+          password: newPassword
+        });
+      expect(loginRes.status).toBe(200);
+      expect(loginRes.body.token).toBeDefined();
+      aliceToken = loginRes.body.token;
     });
   });
 

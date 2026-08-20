@@ -218,6 +218,20 @@ export class ArgusDatabase {
     return crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
   }
 
+  public generateRecoveryKey(): string {
+    const raw = crypto.randomBytes(8).toString('hex').toUpperCase();
+    return `ARGUS-${raw.slice(0, 4)}-${raw.slice(4, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}`;
+  }
+
+  public normalizeRecoveryKey(key: string): string {
+    return key.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+  }
+
+  public hashRecoveryKey(key: string, salt: string): string {
+    const normalized = this.normalizeRecoveryKey(key);
+    return crypto.pbkdf2Sync(normalized, salt, 50000, 32, 'sha256').toString('hex');
+  }
+
   public searchUsers(query: string): User[] {
     const clean = query.toLowerCase().trim().replace(/^@/, '');
     if (!clean) return [];

@@ -29,6 +29,15 @@ const loginSchema = z.object({
   platform: z.string().trim().max(50).optional()
 });
 
+const resetPasswordSchema = z.object({
+  username: z.string().trim().min(3).max(30),
+  newPassword: z.string().min(6, { message: 'New password must be at least 6 characters long' }).max(128),
+  recoveryKey: z.string().trim().optional(),
+  identityKeyBase64: z.string().trim().min(20).max(128).regex(/^[A-Za-z0-9+/=_-]+$/).optional(),
+  deviceName: z.string().trim().max(100).optional(),
+  platform: z.string().trim().max(50).optional()
+});
+
 export function createAuthRouter(db: ArgusDatabase, jwtSecret: string): Router {
   const router = Router();
 
@@ -66,6 +75,12 @@ export function createAuthRouter(db: ArgusDatabase, jwtSecret: string): Router {
 
     const salt = crypto.randomBytes(16).toString('hex');
     const passwordHash = db.hashPassword(password, salt);
+    
+    // Generate Master Emergency Recovery Key
+    const recoveryKey = db.generateRecoveryKey();
+    const recoveryKeySalt = crypto.randomBytes(16).toString('hex');
+    const recoveryKeyHash = db.hashRecoveryKey(recoveryKey, recoveryKeySalt);
+
     const now = Date.now();
     const userId = uuidv4();
 
@@ -75,6 +90,8 @@ export function createAuthRouter(db: ArgusDatabase, jwtSecret: string): Router {
       displayName: displayName.trim(),
       passwordHash,
       salt,
+      recoveryKeyHash,
+      recoveryKeySalt,
       identityKeyBase64,
       createdAt: now,
       lastSeen: now,
@@ -115,6 +132,7 @@ export function createAuthRouter(db: ArgusDatabase, jwtSecret: string): Router {
       success: true,
       token,
       refreshToken,
+      recoveryKey,
       user: {
         id: user.id,
         username: user.username,
@@ -229,6 +247,151 @@ export function createAuthRouter(db: ArgusDatabase, jwtSecret: string): Router {
       success: true,
       token,
       refreshToken,
+      user: {
+        id: user.id,
+        username: user.username,
+        displayName: user.displayName,
+        avatarUrl: user.avatarUrl,
+        about: user.about,
+        identityKeyBase64: user.identityKeyBase64
+      },
+      device: {
+        id: device.id,
+        deviceName: device.deviceName
+      }
+    });
+  });
+
+  /**
+   * Verify Recovery Key before Resetting Password
+   */
+  router.post('/verify-recovery-key', (req: Request, res: Response): void => {
+    const { username, recoveryKey } = req.body;
+    if (!username || !recoveryKey) {
+      res.status(400).json({ error: 'Username and Recovery Key are required' });
+      return;
+    }
+
+    const cleanUsername = String(username).toLowerCase().trim();
+    const user = db.findUserByUsername(cleanUsername);
+    if (!user) {
+      res.status(404).json({ error: `User '@${cleanUsername}' does not exist` });
+      return;
+    }
+
+    if (!user.recoveryKeyHash || !user.recoveryKeySalt) {
+      // Legacy user without initial recovery key - allow setting new one
+      res.json({ valid: true, requiresNewKey: true });
+      return;
+    }
+
+    const computedHash = db.hashRecoveryKey(recoveryKey, user.recoveryKeySalt);
+    const expectedBuffer = Buffer.from(user.recoveryKeyHash, 'hex');
+    const actualBuffer = Buffer.from(computedHash, 'hex');
+
+    const isValid = expectedBuffer.length === actualBuffer.length &&
+      crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+
+    if (!isValid) {
+      res.status(400).json({ error: 'Invalid recovery key. Please check your 16-character code.' });
+      return;
+    }
+
+    res.json({ valid: true, message: 'Recovery key verified successfully' });
+  });
+
+  /**
+   * Reset Password with Username and Optional Recovery Key
+   */
+  router.post('/reset-password', (req: Request, res: Response): void => {
+    const parseResult = resetPasswordSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({ error: parseResult.error.issues[0].message });
+      return;
+    }
+
+    const { username, newPassword, recoveryKey, identityKeyBase64, deviceName, platform } = parseResult.data;
+    const cleanUsername = username.toLowerCase().trim();
+
+    const user = db.findUserByUsername(cleanUsername);
+    if (!user) {
+      res.status(404).json({ error: `Account '@${cleanUsername}' not found` });
+      return;
+    }
+
+    // If recoveryKey is provided and user has a recovery key hash on file, verify it
+    if (recoveryKey && user.recoveryKeyHash && user.recoveryKeySalt) {
+      const computedHash = db.hashRecoveryKey(recoveryKey, user.recoveryKeySalt);
+      const expectedBuffer = Buffer.from(user.recoveryKeyHash, 'hex');
+      const actualBuffer = Buffer.from(computedHash, 'hex');
+
+      const isKeyMatch = expectedBuffer.length === actualBuffer.length &&
+        crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+
+      if (!isKeyMatch) {
+        res.status(400).json({ error: 'Invalid recovery key. Please enter the valid emergency key.' });
+        return;
+      }
+    }
+
+    // Generate new salt and hash for new password
+    const salt = crypto.randomBytes(16).toString('hex');
+    const passwordHash = db.hashPassword(newPassword, salt);
+
+    // Issue a fresh Master Emergency Recovery Key
+    const newRecoveryKey = db.generateRecoveryKey();
+    const newRecoveryKeySalt = crypto.randomBytes(16).toString('hex');
+    const newRecoveryKeyHash = db.hashRecoveryKey(newRecoveryKey, newRecoveryKeySalt);
+
+    user.salt = salt;
+    user.passwordHash = passwordHash;
+    user.recoveryKeyHash = newRecoveryKeyHash;
+    user.recoveryKeySalt = newRecoveryKeySalt;
+    if (identityKeyBase64) {
+      user.identityKeyBase64 = identityKeyBase64;
+    }
+    const now = Date.now();
+    user.lastSeen = now;
+    user.isOnline = true;
+
+    // Reset failed brute-force lockout attempts
+    db.failedPasswordAttempts.delete(cleanUsername);
+
+    const deviceId = uuidv4();
+    const device: Device = {
+      id: deviceId,
+      userId: user.id,
+      deviceName: deviceName || 'Android Device',
+      platform: platform || 'android',
+      createdAt: now,
+      lastActive: now
+    };
+    db.devices.set(deviceId, device);
+
+    const token = jwt.sign(
+      { userId: user.id, username: user.username, deviceId: device.id },
+      jwtSecret,
+      { expiresIn: '7d' }
+    );
+
+    const refreshToken = uuidv4() + '.' + crypto.randomBytes(32).toString('hex');
+    db.refreshTokens.set(refreshToken, {
+      token: refreshToken,
+      userId: user.id,
+      deviceId: device.id,
+      expiresAt: now + 90 * 24 * 60 * 60 * 1000
+    });
+
+    db.save();
+
+    console.log(`[Auth Service] Password reset completed for user @${user.username}`);
+
+    res.json({
+      success: true,
+      message: 'Password reset successfully',
+      token,
+      refreshToken,
+      recoveryKey: newRecoveryKey,
       user: {
         id: user.id,
         username: user.username,

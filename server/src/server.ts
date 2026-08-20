@@ -92,6 +92,7 @@ export function createApp(db: ArgusDatabase, customJwtSecret?: string) {
     res.json({
       status: 'ok',
       service: 'Argus E2EE Gateway',
+      version: '2.4.0',
       environment: process.env.NODE_ENV || 'development',
       uptimeSec: Math.floor(process.uptime()),
       timestamp: Date.now()

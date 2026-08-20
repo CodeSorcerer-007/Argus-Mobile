@@ -122,6 +122,63 @@ class ArgusApiClient(
         }
     }
 
+    suspend fun verifyRecoveryKey(username: String, recoveryKey: String): VerifyRecoveryKeyResponse = withContext(Dispatchers.IO) {
+        try {
+            val payload = json.encodeToString(VerifyRecoveryKeyPayload(username.trim().lowercase(), recoveryKey.trim()))
+            val request = Request.Builder()
+                .url("$baseUrl/api/auth/verify-recovery-key")
+                .post(payload.toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string() ?: ""
+                if (body.isNotEmpty()) {
+                    json.decodeFromString<VerifyRecoveryKeyResponse>(body)
+                } else {
+                    VerifyRecoveryKeyResponse(valid = false, error = "Server returned empty response (${response.code})")
+                }
+            }
+        } catch (e: Exception) {
+            VerifyRecoveryKeyResponse(valid = false, error = e.localizedMessage ?: "Network error")
+        }
+    }
+
+    suspend fun resetPassword(
+        username: String,
+        newPassword: String,
+        recoveryKey: String? = null,
+        identityKeyBase64: String? = null,
+        deviceName: String = "Android Device"
+    ): AuthResponse = withContext(Dispatchers.IO) {
+        try {
+            val payload = json.encodeToString(
+                ResetPasswordPayload(
+                    username = username.trim().lowercase(),
+                    newPassword = newPassword,
+                    recoveryKey = recoveryKey?.trim()?.takeIf { it.isNotBlank() },
+                    identityKeyBase64 = identityKeyBase64,
+                    deviceName = deviceName
+                )
+            )
+            val request = Request.Builder()
+                .url("$baseUrl/api/auth/reset-password")
+                .post(payload.toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string() ?: ""
+                if (body.isNotEmpty()) {
+                    json.decodeFromString<AuthResponse>(body)
+                } else {
+                    AuthResponse(success = false, error = "Server returned empty response (${response.code})")
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusApiClient", "resetPassword failed: ${e.message}", e)
+            AuthResponse(success = false, error = e.localizedMessage ?: "Network connection error")
+        }
+    }
+
     suspend fun publishPreKeyBundle(payload: PublishBundlePayload): Boolean = withContext(Dispatchers.IO) {
         try {
             val token = getAuthToken() ?: return@withContext false
@@ -353,7 +410,32 @@ data class AuthResponse(
     val success: Boolean,
     val token: String? = null,
     val refreshToken: String? = null,
+    val recoveryKey: String? = null,
     val user: User? = null,
+    val error: String? = null
+)
+
+@Serializable
+data class ResetPasswordPayload(
+    val username: String,
+    val newPassword: String,
+    val recoveryKey: String? = null,
+    val identityKeyBase64: String? = null,
+    val deviceName: String = "Android Device",
+    val platform: String = "android"
+)
+
+@Serializable
+data class VerifyRecoveryKeyPayload(
+    val username: String,
+    val recoveryKey: String
+)
+
+@Serializable
+data class VerifyRecoveryKeyResponse(
+    val valid: Boolean = false,
+    val requiresNewKey: Boolean = false,
+    val message: String? = null,
     val error: String? = null
 )
 

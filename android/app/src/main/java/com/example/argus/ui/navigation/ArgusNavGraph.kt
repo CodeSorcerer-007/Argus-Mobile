@@ -102,6 +102,19 @@ fun ArgusNavGraph(container: AppContainer) {
                             }
                         }
                     },
+                    onResetPassword = { username, newPassword, recoveryKey ->
+                        isLoading = true
+                        errorMsg = null
+                        coroutineScope.launch {
+                            val res = container.authRepository.resetPassword(username, newPassword, recoveryKey)
+                            isLoading = false
+                            if (res.isSuccess) {
+                                currentScreen = Screen.Main
+                            } else {
+                                errorMsg = res.exceptionOrNull()?.localizedMessage ?: "Password reset failed. Check your details."
+                            }
+                        }
+                    },
                     onCheckUsername = { username ->
                         container.authRepository.checkUsernameAvailability(username)
                     },

@@ -4,6 +4,8 @@ export interface User {
   displayName: string;
   passwordHash?: string;
   salt?: string;
+  recoveryKeyHash?: string;
+  recoveryKeySalt?: string;
   phoneNumber?: string;
   phoneHash?: string;
   avatarUrl?: string;

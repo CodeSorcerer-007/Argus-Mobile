@@ -40,7 +40,8 @@ import kotlinx.coroutines.launch
 
 enum class AuthTab {
     SIGN_IN,
-    SIGN_UP
+    SIGN_UP,
+    FORGOT_PASSWORD
 }
 
 @Composable
@@ -187,6 +188,7 @@ private fun FeatureRow(
 fun ArgusAuthScreen(
     onLogin: (username: String, password: String) -> Unit,
     onRegister: (username: String, password: String, displayName: String) -> Unit,
+    onResetPassword: (username: String, newPassword: String, recoveryKey: String?) -> Unit,
     onCheckUsername: suspend (String) -> Boolean,
     isLoading: Boolean = false,
     errorMessage: String? = null
@@ -208,6 +210,14 @@ fun ArgusAuthScreen(
     var registerConfirmPassword by remember { mutableStateOf("") }
     var registerPasswordVisible by remember { mutableStateOf(false) }
     var registerConfirmPasswordVisible by remember { mutableStateOf(false) }
+
+    // Forgot Password form fields
+    var forgotUsername by remember { mutableStateOf("") }
+    var forgotRecoveryKey by remember { mutableStateOf("") }
+    var forgotNewPassword by remember { mutableStateOf("") }
+    var forgotConfirmPassword by remember { mutableStateOf("") }
+    var forgotPasswordVisible by remember { mutableStateOf(false) }
+    var forgotConfirmPasswordVisible by remember { mutableStateOf(false) }
 
     // Username availability state
     var isCheckingUsername by remember { mutableStateOf(false) }
@@ -277,47 +287,73 @@ fun ArgusAuthScreen(
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            // Tab Segment Control (Instagram Style)
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(ObsidianSurface)
-                    .border(1.dp, ObsidianBorder, RoundedCornerShape(14.dp))
-                    .padding(4.dp)
-            ) {
-                Box(
+            // Tab Segment Control (Shown for Sign In / Sign Up, or Back button for Forgot Password)
+            if (activeTab == AuthTab.FORGOT_PASSWORD) {
+                Row(
                     modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(if (activeTab == AuthTab.SIGN_IN) EmeraldPrimary else Color.Transparent)
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(ObsidianSurface)
                         .clickable { activeTab = AuthTab.SIGN_IN }
-                        .padding(vertical = 10.dp),
-                    contentAlignment = Alignment.Center
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Icon(
+                        imageVector = Icons.Default.ArrowBack,
+                        contentDescription = "Back",
+                        tint = EmeraldLight,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "Sign In",
-                        color = if (activeTab == AuthTab.SIGN_IN) ObsidianBlack else TextSecondary,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
+                        text = "Back to Sign In",
+                        color = EmeraldLight,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp
                     )
                 }
-
-                Box(
+            } else {
+                Row(
                     modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(if (activeTab == AuthTab.SIGN_UP) EmeraldPrimary else Color.Transparent)
-                        .clickable { activeTab = AuthTab.SIGN_UP }
-                        .padding(vertical = 10.dp),
-                    contentAlignment = Alignment.Center
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(ObsidianSurface)
+                        .border(1.dp, ObsidianBorder, RoundedCornerShape(14.dp))
+                        .padding(4.dp)
                 ) {
-                    Text(
-                        text = "Create Account",
-                        color = if (activeTab == AuthTab.SIGN_UP) ObsidianBlack else TextSecondary,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
-                    )
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (activeTab == AuthTab.SIGN_IN) EmeraldPrimary else Color.Transparent)
+                            .clickable { activeTab = AuthTab.SIGN_IN }
+                            .padding(vertical = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "Sign In",
+                            color = if (activeTab == AuthTab.SIGN_IN) ObsidianBlack else TextSecondary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (activeTab == AuthTab.SIGN_UP) EmeraldPrimary else Color.Transparent)
+                            .clickable { activeTab = AuthTab.SIGN_UP }
+                            .padding(vertical = 10.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "Create Account",
+                            color = if (activeTab == AuthTab.SIGN_UP) ObsidianBlack else TextSecondary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                    }
                 }
             }
 
@@ -433,7 +469,26 @@ fun ArgusAuthScreen(
                                 colors = authTextFieldColors()
                             )
 
-                            Spacer(modifier = Modifier.height(6.dp))
+                            // Forgot Password Link (Instagram Style)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                Text(
+                                    text = "Forgot password?",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = EmeraldLight,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier
+                                        .clickable {
+                                            forgotUsername = loginUsername
+                                            activeTab = AuthTab.FORGOT_PASSWORD
+                                        }
+                                        .padding(vertical = 4.dp, horizontal = 2.dp)
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(2.dp))
 
                             ArgusButton(
                                 text = if (isLoading) "Signing In..." else "Log In",
@@ -442,7 +497,7 @@ fun ArgusAuthScreen(
                                     onLogin(loginUsername, loginPassword)
                                 },
                                 enabled = loginUsername.trim().length >= 3 && loginPassword.isNotBlank() && !isLoading,
-                                icon = Icons.Default.Login
+                                icon = Icons.Default.LockOpen
                             )
 
                             Row(
@@ -458,6 +513,194 @@ fun ArgusAuthScreen(
                                 TextButton(onClick = { activeTab = AuthTab.SIGN_UP }) {
                                     Text(
                                         text = "Create Account",
+                                        color = EmeraldLight,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 13.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    AuthTab.FORGOT_PASSWORD -> {
+                        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                            Text(
+                                text = "Account Recovery",
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = TextPrimary
+                            )
+                            Text(
+                                text = "Reset your password using your @username and optional emergency recovery key.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary
+                            )
+
+                            // Username
+                            OutlinedTextField(
+                                value = forgotUsername,
+                                onValueChange = { forgotUsername = it.replace(" ", "").lowercase() },
+                                label = { Text("User ID / Username") },
+                                placeholder = { Text("e.g. alex_hunter") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.AlternateEmail,
+                                        contentDescription = null,
+                                        tint = EmeraldPrimary
+                                    )
+                                },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Ascii,
+                                    imeAction = ImeAction.Next
+                                ),
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = authTextFieldColors()
+                            )
+
+                            // Emergency Recovery Key (Optional / Emergency Reset)
+                            OutlinedTextField(
+                                value = forgotRecoveryKey,
+                                onValueChange = { forgotRecoveryKey = it.uppercase() },
+                                label = { Text("Recovery Key (Optional)") },
+                                placeholder = { Text("ARGUS-XXXX-XXXX-XXXX-XXXX") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.VpnKey,
+                                        contentDescription = null,
+                                        tint = EmeraldPrimary
+                                    )
+                                },
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Ascii,
+                                    imeAction = ImeAction.Next
+                                ),
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = authTextFieldColors()
+                            )
+
+                            // New Password
+                            Column {
+                                OutlinedTextField(
+                                    value = forgotNewPassword,
+                                    onValueChange = { forgotNewPassword = it },
+                                    label = { Text("New Password (min 6 characters)") },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.Lock,
+                                            contentDescription = null,
+                                            tint = EmeraldPrimary
+                                        )
+                                    },
+                                    trailingIcon = {
+                                        IconButton(onClick = { forgotPasswordVisible = !forgotPasswordVisible }) {
+                                            Icon(
+                                                imageVector = if (forgotPasswordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                                contentDescription = "Toggle Password Visibility",
+                                                tint = TextMuted
+                                            )
+                                        }
+                                    },
+                                    visualTransformation = if (forgotPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                    singleLine = true,
+                                    keyboardOptions = KeyboardOptions(
+                                        keyboardType = KeyboardType.Password,
+                                        imeAction = ImeAction.Next
+                                    ),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(14.dp),
+                                    colors = authTextFieldColors()
+                                )
+
+                                if (forgotNewPassword.isNotBlank()) {
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    PasswordStrengthIndicator(password = forgotNewPassword)
+                                }
+                            }
+
+                            // Confirm New Password
+                            OutlinedTextField(
+                                value = forgotConfirmPassword,
+                                onValueChange = { forgotConfirmPassword = it },
+                                label = { Text("Confirm New Password") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.LockReset,
+                                        contentDescription = null,
+                                        tint = EmeraldPrimary
+                                    )
+                                },
+                                trailingIcon = {
+                                    IconButton(onClick = { forgotConfirmPasswordVisible = !forgotConfirmPasswordVisible }) {
+                                        Icon(
+                                            imageVector = if (forgotConfirmPasswordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                            contentDescription = "Toggle Confirm Visibility",
+                                            tint = TextMuted
+                                        )
+                                    }
+                                },
+                                visualTransformation = if (forgotConfirmPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(
+                                    keyboardType = KeyboardType.Password,
+                                    imeAction = ImeAction.Done
+                                ),
+                                keyboardActions = KeyboardActions(
+                                    onDone = {
+                                        val canReset = forgotUsername.trim().length >= 3 &&
+                                                forgotNewPassword.length >= 6 &&
+                                                forgotNewPassword == forgotConfirmPassword &&
+                                                !isLoading
+                                        if (canReset) {
+                                            keyboardController?.hide()
+                                            onResetPassword(forgotUsername, forgotNewPassword, forgotRecoveryKey.takeIf { it.isNotBlank() })
+                                        }
+                                    }
+                                ),
+                                modifier = Modifier.fillMaxWidth(),
+                                shape = RoundedCornerShape(14.dp),
+                                colors = authTextFieldColors()
+                            )
+
+                            if (forgotConfirmPassword.isNotBlank() && forgotNewPassword != forgotConfirmPassword) {
+                                Text(
+                                    text = "Passwords do not match",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFFFF6B6B)
+                                )
+                            }
+
+                            val isResetValid = forgotUsername.trim().length >= 3 &&
+                                    forgotNewPassword.length >= 6 &&
+                                    forgotNewPassword == forgotConfirmPassword &&
+                                    !isLoading
+
+                            ArgusButton(
+                                text = if (isLoading) "Resetting Password..." else "Reset Password & Log In",
+                                onClick = {
+                                    keyboardController?.hide()
+                                    onResetPassword(forgotUsername, forgotNewPassword, forgotRecoveryKey.takeIf { it.isNotBlank() })
+                                },
+                                enabled = isResetValid,
+                                icon = Icons.Default.LockReset
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Remember your password?",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary
+                                )
+                                TextButton(onClick = { activeTab = AuthTab.SIGN_IN }) {
+                                    Text(
+                                        text = "Sign In",
                                         color = EmeraldLight,
                                         fontWeight = FontWeight.Bold,
                                         fontSize = 13.sp

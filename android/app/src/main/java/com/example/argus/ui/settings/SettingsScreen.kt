@@ -339,6 +339,17 @@ fun SettingsScreen(
                     preferences.setTypingIndicatorsEnabled(it)
                 }
             )
+            SettingsClickableRow(
+                icon = Icons.Default.VpnKey,
+                title = "Emergency Recovery Key",
+                subtitle = "Tap to copy your master account recovery code",
+                onClick = {
+                    val key = preferences.getEmergencyRecoveryKey() ?: "ARGUS-SECURE-VAULT"
+                    val clipboard = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText("Argus Recovery Key", key))
+                    Toast.makeText(context, "Recovery key copied to clipboard: $key", Toast.LENGTH_LONG).show()
+                }
+            )
 
             // 💬 Chats Section
             SettingsSectionHeader("Chats")

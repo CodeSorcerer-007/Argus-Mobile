@@ -44,6 +44,9 @@ class AuthRepository(
             if (response.success && response.user != null && response.token != null) {
                 preferences.setAuthToken(response.token)
                 preferences.saveCurrentUser(response.user)
+                if (response.recoveryKey != null) {
+                    preferences.setEmergencyRecoveryKey(response.recoveryKey)
+                }
 
                 // Publish initial PreKey bundle to server for X3DH session establishment
                 publishInitialPreKeys(identityKeyPair)
@@ -76,7 +79,7 @@ class AuthRepository(
                 preferences.setAuthToken(response.token)
                 preferences.saveCurrentUser(response.user)
 
-                // Ensure initial PreKey bundle is published
+                // Refresh PreKeys upon login
                 publishInitialPreKeys(identityKeyPair)
 
                 // Connect WebSocket
@@ -89,6 +92,58 @@ class AuthRepository(
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    suspend fun verifyRecoveryKey(username: String, recoveryKey: String): Result<Boolean> {
+        return try {
+            val res = apiClient.verifyRecoveryKey(username, recoveryKey)
+            if (res.valid) {
+                Result.success(true)
+            } else {
+                Result.failure(Exception(res.error ?: "Invalid emergency recovery key"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun resetPassword(username: String, newPassword: String, recoveryKey: String? = null): Result<User> {
+        return try {
+            val identityKeyPair = getOrCreateIdentityKeyPair()
+            val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}"
+
+            val response = apiClient.resetPassword(
+                username = username.trim(),
+                newPassword = newPassword,
+                recoveryKey = recoveryKey?.trim()?.takeIf { it.isNotBlank() },
+                identityKeyBase64 = identityKeyPair.publicKeyBase64,
+                deviceName = deviceName
+            )
+
+            if (response.success && response.user != null && response.token != null) {
+                preferences.setAuthToken(response.token)
+                preferences.saveCurrentUser(response.user)
+                if (response.recoveryKey != null) {
+                    preferences.setEmergencyRecoveryKey(response.recoveryKey)
+                }
+
+                // Re-publish PreKeys with new session
+                publishInitialPreKeys(identityKeyPair)
+
+                // Connect WebSocket
+                webSocketClient.connect()
+
+                Result.success(response.user)
+            } else {
+                Result.failure(Exception(response.error ?: "Password reset failed"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    fun getEmergencyRecoveryKey(): String? {
+        return preferences.getEmergencyRecoveryKey()
     }
 
     suspend fun checkUsernameAvailability(username: String): Boolean {
