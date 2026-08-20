@@ -6,6 +6,14 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
+data class PermissionHealth(
+    val hasCamera: Boolean = true,
+    val hasAudio: Boolean = true,
+    val hasStorage: Boolean = true,
+    val hasNotifications: Boolean = true,
+    val hasContacts: Boolean = true
+)
+
 data class ShieldSecurityStatus(
     val privacyScore: Int, // 0 - 100
     val isE2EEActive: Boolean,
@@ -16,6 +24,7 @@ data class ShieldSecurityStatus(
     val unverifiedContactsCount: Int,
     val isEmergencyPrivacyActive: Boolean,
     val activeDevicesCount: Int,
+    val permissions: PermissionHealth,
     val issuesFound: List<String>
 )
 
@@ -23,8 +32,14 @@ class ShieldRepository(
     private val preferences: ArgusPreferences,
     private val localStore: ArgusLocalStore
 ) {
+    private var currentPermissionHealth = PermissionHealth()
     private val _statusFlow = MutableStateFlow(computeStatus())
     val statusFlow: StateFlow<ShieldSecurityStatus> = _statusFlow.asStateFlow()
+
+    fun updatePermissionHealth(health: PermissionHealth) {
+        currentPermissionHealth = health
+        refresh()
+    }
 
     fun refresh() {
         _statusFlow.value = computeStatus()
@@ -42,11 +57,11 @@ class ShieldRepository(
         var score = 100
 
         if (!isAppLock) {
-            score -= 20
+            score -= 10
             issues.add("App Lock is not enabled (Enable PIN/Biometrics for device security)")
         }
         if (unverifiedCount > 0) {
-            score -= 15
+            score -= 10
             issues.add("$unverifiedCount contact(s) have unverified 60-digit Safety Numbers")
         }
 
@@ -60,6 +75,7 @@ class ShieldRepository(
             unverifiedContactsCount = unverifiedCount,
             isEmergencyPrivacyActive = isEmergency,
             activeDevicesCount = 1,
+            permissions = currentPermissionHealth,
             issuesFound = issues
         )
     }

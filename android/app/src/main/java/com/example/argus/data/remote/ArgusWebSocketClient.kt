@@ -12,6 +12,8 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.*
 import java.util.concurrent.TimeUnit
 
@@ -34,6 +36,33 @@ data class WireEncryptedPayload(
     val expiresAt: Long? = null,
     val status: String = "SENT"
 )
+
+@Serializable
+private data class SendMessageEvent(val type: String = "SEND_MESSAGE", val payload: WireEncryptedPayload)
+
+@Serializable
+private data class DeliveryAckEvent(val type: String = "ACK_DELIVERED", val messageId: String, val senderId: String)
+
+@Serializable
+private data class ReadAckEvent(val type: String = "ACK_READ", val messageId: String, val senderId: String)
+
+@Serializable
+private data class TypingEvent(val type: String, val recipientId: String, val conversationId: String)
+
+@Serializable
+private data class CallOfferEvent(val type: String = "CALL_OFFER", val targetUserId: String, val callId: String, val callType: String, val sdp: String)
+
+@Serializable
+private data class CallAnswerEvent(val type: String = "CALL_ANSWER", val targetUserId: String, val callId: String, val sdp: String)
+
+@Serializable
+private data class IceCandidateEvent(val type: String = "ICE_CANDIDATE", val targetUserId: String, val callId: String, val candidate: String)
+
+@Serializable
+private data class CallEndEvent(val type: String = "CALL_END", val targetUserId: String, val callId: String)
+
+@Serializable
+private data class AuthEvent(val type: String = "AUTH", val token: String, val deviceId: String)
 
 sealed interface WebSocketInboundEvent {
     data class AuthSuccess(val userId: String) : WebSocketInboundEvent
@@ -58,7 +87,11 @@ class ArgusWebSocketClient(
         .pingInterval(25, TimeUnit.SECONDS)
         .build()
 
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = Json {
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+        isLenient = true
+    }
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private var webSocket: WebSocket? = null
@@ -80,29 +113,31 @@ class ArgusWebSocketClient(
         val currentWsUrl = getWsUrl()
         val request = Request.Builder().url(currentWsUrl).build()
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(ws: WebSocket, response: Response) {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
                 Log.d(TAG, "WebSocket connected, sending AUTH")
                 _connectionState.value = true
                 reconnectAttempt = 0
                 reconnectJob?.cancel()
-                val authPayload = """{"type":"AUTH","token":"$token","deviceId":"${getDeviceId() ?: "android_1"}"}"""
-                ws.send(authPayload)
+                val authPayload = json.encodeToString(
+                    AuthEvent(token = token, deviceId = getDeviceId() ?: "android_1")
+                )
+                webSocket.send(authPayload)
             }
 
-            override fun onMessage(ws: WebSocket, text: String) {
+            override fun onMessage(webSocket: WebSocket, text: String) {
                 handleIncomingMessage(text)
             }
 
-            override fun onClosing(ws: WebSocket, code: Int, reason: String) {
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                 _connectionState.value = false
             }
 
-            override fun onClosed(ws: WebSocket, code: Int, reason: String) {
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 _connectionState.value = false
                 scheduleReconnect()
             }
 
-            override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.w(TAG, "WebSocket connection failed: ${t.message}")
                 _connectionState.value = false
                 scheduleReconnect()
@@ -135,55 +170,55 @@ class ArgusWebSocketClient(
     private fun handleIncomingMessage(text: String) {
         try {
             val root = json.decodeFromString<JsonObject>(text)
-            val type = root["type"]?.toString()?.replace("\"", "") ?: return
+            val type = root["type"]?.jsonPrimitive?.contentOrNull ?: return
 
             when (type) {
                 "AUTH_SUCCESS" -> {
-                    val userId = root["userId"]?.toString()?.replace("\"", "") ?: ""
+                    val userId = root["userId"]?.jsonPrimitive?.contentOrNull ?: ""
                     scope.launch { _inboundEvents.emit(WebSocketInboundEvent.AuthSuccess(userId)) }
                 }
                 "NEW_MESSAGE" -> {
-                    val payloadJson = root["payload"]?.toString() ?: return
-                    val payload = json.decodeFromString<WireEncryptedPayload>(payloadJson)
+                    val payloadObj = root["payload"] ?: return
+                    val payload = json.decodeFromString<WireEncryptedPayload>(payloadObj.toString())
                     scope.launch { _inboundEvents.emit(WebSocketInboundEvent.NewMessage(payload)) }
                 }
                 "MESSAGE_STATUS" -> {
-                    val msgId = root["messageId"]?.toString()?.replace("\"", "") ?: return
-                    val status = root["status"]?.toString()?.replace("\"", "") ?: "SENT"
+                    val msgId = root["messageId"]?.jsonPrimitive?.contentOrNull ?: return
+                    val status = root["status"]?.jsonPrimitive?.contentOrNull ?: "SENT"
                     scope.launch { _inboundEvents.emit(WebSocketInboundEvent.MessageStatusUpdate(msgId, status)) }
                 }
                 "TYPING" -> {
-                    val userId = root["userId"]?.toString()?.replace("\"", "") ?: return
-                    val convId = root["conversationId"]?.toString()?.replace("\"", "") ?: return
-                    val isTyping = root["isTyping"]?.toString()?.toBoolean() ?: false
+                    val userId = root["userId"]?.jsonPrimitive?.contentOrNull ?: return
+                    val convId = root["conversationId"]?.jsonPrimitive?.contentOrNull ?: return
+                    val isTyping = root["isTyping"]?.jsonPrimitive?.contentOrNull?.toBoolean() ?: false
                     scope.launch { _inboundEvents.emit(WebSocketInboundEvent.Typing(userId, convId, isTyping)) }
                 }
                 "PRESENCE" -> {
-                    val userId = root["userId"]?.toString()?.replace("\"", "") ?: return
-                    val isOnline = root["isOnline"]?.toString()?.toBoolean() ?: false
-                    val lastSeen = root["lastSeen"]?.toString()?.toLongOrNull() ?: System.currentTimeMillis()
+                    val userId = root["userId"]?.jsonPrimitive?.contentOrNull ?: return
+                    val isOnline = root["isOnline"]?.jsonPrimitive?.contentOrNull?.toBoolean() ?: false
+                    val lastSeen = root["lastSeen"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: System.currentTimeMillis()
                     scope.launch { _inboundEvents.emit(WebSocketInboundEvent.Presence(userId, isOnline, lastSeen)) }
                 }
                 "INCOMING_CALL" -> {
-                    val callerId = root["callerId"]?.toString()?.replace("\"", "") ?: return
-                    val callId = root["callId"]?.toString()?.replace("\"", "") ?: return
-                    val callType = root["callType"]?.toString()?.replace("\"", "") ?: "VOICE"
-                    val sdp = root["sdp"]?.toString()
+                    val callerId = root["callerId"]?.jsonPrimitive?.contentOrNull ?: return
+                    val callId = root["callId"]?.jsonPrimitive?.contentOrNull ?: return
+                    val callType = root["callType"]?.jsonPrimitive?.contentOrNull ?: "VOICE"
+                    val sdp = root["sdp"]?.jsonPrimitive?.contentOrNull
                     scope.launch { _inboundEvents.emit(WebSocketInboundEvent.IncomingCall(callerId, callId, callType, sdp)) }
                 }
                 "CALL_ANSWERED" -> {
-                    val callId = root["callId"]?.toString()?.replace("\"", "") ?: return
-                    val sdp = root["sdp"]?.toString()
+                    val callId = root["callId"]?.jsonPrimitive?.contentOrNull ?: return
+                    val sdp = root["sdp"]?.jsonPrimitive?.contentOrNull
                     scope.launch { _inboundEvents.emit(WebSocketInboundEvent.CallAnswered(callId, sdp)) }
                 }
                 "REMOTE_ICE_CANDIDATE" -> {
-                    val callId = root["callId"]?.toString()?.replace("\"", "") ?: return
-                    val candidate = root["candidate"]?.toString()
+                    val callId = root["callId"]?.jsonPrimitive?.contentOrNull ?: return
+                    val candidate = root["candidate"]?.jsonPrimitive?.contentOrNull
                     scope.launch { _inboundEvents.emit(WebSocketInboundEvent.RemoteIceCandidate(callId, candidate)) }
                 }
                 "CALL_TERMINATED" -> {
-                    val callId = root["callId"]?.toString()?.replace("\"", "") ?: return
-                    val reason = root["reason"]?.toString()?.replace("\"", "")
+                    val callId = root["callId"]?.jsonPrimitive?.contentOrNull ?: return
+                    val reason = root["reason"]?.jsonPrimitive?.contentOrNull
                     scope.launch { _inboundEvents.emit(WebSocketInboundEvent.CallTerminated(callId, reason)) }
                 }
             }
@@ -193,44 +228,43 @@ class ArgusWebSocketClient(
     }
 
     fun sendEncryptedMessage(payload: WireEncryptedPayload): Boolean {
-        val jsonPayload = json.encodeToString(payload)
-        val wireMsg = """{"type":"SEND_MESSAGE","payload":$jsonPayload}"""
+        val wireMsg = json.encodeToString(SendMessageEvent(payload = payload))
         return webSocket?.send(wireMsg) ?: false
     }
 
     fun sendDeliveryAck(messageId: String, senderId: String): Boolean {
-        val msg = """{"type":"ACK_DELIVERED","messageId":"$messageId","senderId":"$senderId"}"""
-        return webSocket?.send(msg) ?: false
+        val wireMsg = json.encodeToString(DeliveryAckEvent(messageId = messageId, senderId = senderId))
+        return webSocket?.send(wireMsg) ?: false
     }
 
     fun sendReadAck(messageId: String, senderId: String): Boolean {
-        val msg = """{"type":"ACK_READ","messageId":"$messageId","senderId":"$senderId"}"""
-        return webSocket?.send(msg) ?: false
+        val wireMsg = json.encodeToString(ReadAckEvent(messageId = messageId, senderId = senderId))
+        return webSocket?.send(wireMsg) ?: false
     }
 
     fun sendTyping(recipientId: String, conversationId: String, isTyping: Boolean): Boolean {
         val type = if (isTyping) "TYPING_START" else "TYPING_STOP"
-        val msg = """{"type":"$type","recipientId":"$recipientId","conversationId":"$conversationId"}"""
-        return webSocket?.send(msg) ?: false
+        val wireMsg = json.encodeToString(TypingEvent(type = type, recipientId = recipientId, conversationId = conversationId))
+        return webSocket?.send(wireMsg) ?: false
     }
 
     fun sendCallOffer(targetUserId: String, callId: String, callType: String, sdp: String): Boolean {
-        val msg = """{"type":"CALL_OFFER","targetUserId":"$targetUserId","callId":"$callId","callType":"$callType","sdp":"$sdp"}"""
-        return webSocket?.send(msg) ?: false
+        val wireMsg = json.encodeToString(CallOfferEvent(targetUserId = targetUserId, callId = callId, callType = callType, sdp = sdp))
+        return webSocket?.send(wireMsg) ?: false
     }
 
     fun sendCallAnswer(targetUserId: String, callId: String, sdp: String): Boolean {
-        val msg = """{"type":"CALL_ANSWER","targetUserId":"$targetUserId","callId":"$callId","sdp":"$sdp"}"""
-        return webSocket?.send(msg) ?: false
+        val wireMsg = json.encodeToString(CallAnswerEvent(targetUserId = targetUserId, callId = callId, sdp = sdp))
+        return webSocket?.send(wireMsg) ?: false
     }
 
     fun sendIceCandidate(targetUserId: String, callId: String, candidate: String): Boolean {
-        val msg = """{"type":"ICE_CANDIDATE","targetUserId":"$targetUserId","callId":"$callId","candidate":"$candidate"}"""
-        return webSocket?.send(msg) ?: false
+        val wireMsg = json.encodeToString(IceCandidateEvent(targetUserId = targetUserId, callId = callId, candidate = candidate))
+        return webSocket?.send(wireMsg) ?: false
     }
 
     fun sendCallEnd(targetUserId: String, callId: String): Boolean {
-        val msg = """{"type":"CALL_END","targetUserId":"$targetUserId","callId":"$callId"}"""
-        return webSocket?.send(msg) ?: false
+        val wireMsg = json.encodeToString(CallEndEvent(targetUserId = targetUserId, callId = callId))
+        return webSocket?.send(wireMsg) ?: false
     }
 }

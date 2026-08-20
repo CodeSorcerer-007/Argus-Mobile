@@ -17,7 +17,7 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
 
     companion object {
         const val DATABASE_NAME = "argus_secure_local.db"
-        const val DATABASE_VERSION = 2
+        const val DATABASE_VERSION = 3
 
         private val json = Json { ignoreUnknownKeys = true }
     }
@@ -92,7 +92,7 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
                 display_name TEXT NOT NULL,
-                phone_number TEXT NOT NULL,
+                phone_number TEXT,
                 username TEXT,
                 avatar_url TEXT,
                 identity_key TEXT,
@@ -175,6 +175,11 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
                 )
                 if (deletedCount > 0) {
                     loadConversations()
+                    // Refresh in-memory messages for any open conversations
+                    val currentMap = _messagesFlow.value.toMutableMap()
+                    for (convId in currentMap.keys) {
+                        loadMessagesForConversation(convId)
+                    }
                 }
             } catch (e: Exception) {
                 android.util.Log.e("ArgusLocalStore", "purgeExpiredDisappearingMessages failed", e)
@@ -196,369 +201,462 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
 
     fun loadConversations(): List<Conversation> {
         val list = mutableListOf<Conversation>()
-        val db = readableDatabase
-        val cursor = db.rawQuery("SELECT * FROM conversations ORDER BY is_pinned DESC, last_message_timestamp DESC", null)
-        cursor.use {
-            while (it.moveToNext()) {
-                val participantIdsRaw = it.getString(it.getColumnIndexOrThrow("participant_ids"))
-                val participants = try {
-                    json.decodeFromString<List<String>>(participantIdsRaw)
-                } catch (e: Exception) {
-                    emptyList()
-                }
+        try {
+            val db = readableDatabase
+            val cursor = db.rawQuery("SELECT * FROM conversations ORDER BY is_pinned DESC, last_message_timestamp DESC", null)
+            cursor.use {
+                while (it.moveToNext()) {
+                    val participantIdsRaw = it.getString(it.getColumnIndexOrThrow("participant_ids"))
+                    val participants = try {
+                        json.decodeFromString<List<String>>(participantIdsRaw)
+                    } catch (e: Exception) {
+                        emptyList()
+                    }
 
-                list.add(
-                    Conversation(
-                        id = it.getString(it.getColumnIndexOrThrow("id")),
-                        type = ConversationType.valueOf(it.getString(it.getColumnIndexOrThrow("type"))),
-                        title = it.getString(it.getColumnIndexOrThrow("title")),
-                        participantIds = participants,
-                        lastSnippet = it.getString(it.getColumnIndexOrThrow("last_snippet")) ?: "",
-                        lastMessageTimestamp = it.getLong(it.getColumnIndexOrThrow("last_message_timestamp")),
-                        unreadCount = it.getInt(it.getColumnIndexOrThrow("unread_count")),
-                        isPinned = it.getInt(it.getColumnIndexOrThrow("is_pinned")) == 1,
-                        isArchived = it.getInt(it.getColumnIndexOrThrow("is_archived")) == 1,
-                        isLocked = it.getInt(it.getColumnIndexOrThrow("is_locked")) == 1,
-                        disappearingDurationSec = if (it.isNull(it.getColumnIndexOrThrow("disappearing_duration"))) null else it.getInt(it.getColumnIndexOrThrow("disappearing_duration")),
-                        avatarUrl = it.getString(it.getColumnIndexOrThrow("avatar_url"))
+                    val typeStr = it.getString(it.getColumnIndexOrThrow("type"))
+                    val convType = try {
+                        ConversationType.valueOf(typeStr)
+                    } catch (e: Exception) {
+                        ConversationType.DIRECT
+                    }
+
+                    list.add(
+                        Conversation(
+                            id = it.getString(it.getColumnIndexOrThrow("id")),
+                            type = convType,
+                            title = it.getString(it.getColumnIndexOrThrow("title")),
+                            participantIds = participants,
+                            lastSnippet = it.getString(it.getColumnIndexOrThrow("last_snippet")) ?: "",
+                            lastMessageTimestamp = it.getLong(it.getColumnIndexOrThrow("last_message_timestamp")),
+                            unreadCount = it.getInt(it.getColumnIndexOrThrow("unread_count")),
+                            isPinned = it.getInt(it.getColumnIndexOrThrow("is_pinned")) == 1,
+                            isArchived = it.getInt(it.getColumnIndexOrThrow("is_archived")) == 1,
+                            isLocked = it.getInt(it.getColumnIndexOrThrow("is_locked")) == 1,
+                            disappearingDurationSec = if (it.isNull(it.getColumnIndexOrThrow("disappearing_duration"))) null else it.getInt(it.getColumnIndexOrThrow("disappearing_duration")),
+                            avatarUrl = it.getString(it.getColumnIndexOrThrow("avatar_url"))
+                        )
                     )
-                )
+                }
             }
+            _conversationsFlow.value = list
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "loadConversations failed", e)
         }
-        _conversationsFlow.value = list
         return list
     }
 
     fun upsertConversation(conv: Conversation) {
-        val db = writableDatabase
-        db.execSQL(
-            """
-            INSERT OR REPLACE INTO conversations (id, type, title, participant_ids, last_snippet, last_message_timestamp, unread_count, is_pinned, is_archived, is_locked, disappearing_duration, avatar_url)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """.trimIndent(),
-            arrayOf<Any?>(
-                conv.id,
-                conv.type.name,
-                conv.title,
-                json.encodeToString(conv.participantIds),
-                conv.lastSnippet,
-                conv.lastMessageTimestamp,
-                conv.unreadCount,
-                if (conv.isPinned) 1 else 0,
-                if (conv.isArchived) 1 else 0,
-                if (conv.isLocked) 1 else 0,
-                conv.disappearingDurationSec,
-                conv.avatarUrl
+        try {
+            val db = writableDatabase
+            db.execSQL(
+                """
+                INSERT OR REPLACE INTO conversations (id, type, title, participant_ids, last_snippet, last_message_timestamp, unread_count, is_pinned, is_archived, is_locked, disappearing_duration, avatar_url)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """.trimIndent(),
+                arrayOf<Any?>(
+                    conv.id,
+                    conv.type.name,
+                    conv.title,
+                    json.encodeToString(conv.participantIds),
+                    conv.lastSnippet,
+                    conv.lastMessageTimestamp,
+                    conv.unreadCount,
+                    if (conv.isPinned) 1 else 0,
+                    if (conv.isArchived) 1 else 0,
+                    if (conv.isLocked) 1 else 0,
+                    conv.disappearingDurationSec,
+                    conv.avatarUrl
+                )
             )
-        )
-        loadConversations()
+            loadConversations()
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "upsertConversation failed: ${e.message}", e)
+        }
     }
 
     // --- Messages CRUD ---
 
     fun loadMessagesForConversation(convId: String): List<Message> {
         val list = mutableListOf<Message>()
-        val db = readableDatabase
-        val cursor = db.rawQuery("SELECT * FROM messages WHERE conversation_id = ? ORDER BY timestamp ASC", arrayOf(convId))
-        cursor.use {
-            while (it.moveToNext()) {
-                val reactionsJson = it.getString(it.getColumnIndexOrThrow("reactions_json"))
-                val reactionsMap = try {
-                    if (reactionsJson != null) json.decodeFromString<Map<String, String>>(reactionsJson) else emptyMap()
-                } catch (e: Exception) {
-                    emptyMap()
-                }
+        try {
+            val db = readableDatabase
+            val cursor = db.rawQuery("SELECT * FROM messages WHERE conversation_id = ? ORDER BY timestamp ASC", arrayOf(convId))
+            cursor.use {
+                while (it.moveToNext()) {
+                    val reactionsJson = it.getString(it.getColumnIndexOrThrow("reactions_json"))
+                    val reactionsMap = try {
+                        if (reactionsJson != null) json.decodeFromString<Map<String, String>>(reactionsJson) else emptyMap()
+                    } catch (e: Exception) {
+                        emptyMap()
+                    }
 
-                list.add(
-                    Message(
-                        id = it.getString(it.getColumnIndexOrThrow("id")),
-                        conversationId = it.getString(it.getColumnIndexOrThrow("conversation_id")),
-                        senderId = it.getString(it.getColumnIndexOrThrow("sender_id")),
-                        recipientId = it.getString(it.getColumnIndexOrThrow("recipient_id")),
-                        text = it.getString(it.getColumnIndexOrThrow("text")),
-                        mediaUri = it.getString(it.getColumnIndexOrThrow("media_uri")),
-                        mediaType = it.getString(it.getColumnIndexOrThrow("media_type")),
-                        mediaSizeBytes = it.getLong(it.getColumnIndexOrThrow("media_size")),
-                        status = MessageStatus.valueOf(it.getString(it.getColumnIndexOrThrow("status"))),
-                        timestamp = it.getLong(it.getColumnIndexOrThrow("timestamp")),
-                        replyToMessageId = it.getString(it.getColumnIndexOrThrow("reply_to_id")),
-                        replyToSnippet = it.getString(it.getColumnIndexOrThrow("reply_to_snippet")),
-                        reactions = reactionsMap,
-                        isEdited = it.getInt(it.getColumnIndexOrThrow("is_edited")) == 1,
-                        expiresAt = if (it.isNull(it.getColumnIndexOrThrow("expires_at"))) null else it.getLong(it.getColumnIndexOrThrow("expires_at")),
-                        isEncrypted = it.getInt(it.getColumnIndexOrThrow("is_encrypted")) == 1
+                    val statusStr = it.getString(it.getColumnIndexOrThrow("status"))
+                    val msgStatus = try {
+                        MessageStatus.valueOf(statusStr)
+                    } catch (e: Exception) {
+                        MessageStatus.DELIVERED
+                    }
+
+                    list.add(
+                        Message(
+                            id = it.getString(it.getColumnIndexOrThrow("id")),
+                            conversationId = it.getString(it.getColumnIndexOrThrow("conversation_id")),
+                            senderId = it.getString(it.getColumnIndexOrThrow("sender_id")),
+                            recipientId = it.getString(it.getColumnIndexOrThrow("recipient_id")),
+                            text = it.getString(it.getColumnIndexOrThrow("text")),
+                            mediaUri = it.getString(it.getColumnIndexOrThrow("media_uri")),
+                            mediaType = it.getString(it.getColumnIndexOrThrow("media_type")),
+                            mediaSizeBytes = it.getLong(it.getColumnIndexOrThrow("media_size")),
+                            status = msgStatus,
+                            timestamp = it.getLong(it.getColumnIndexOrThrow("timestamp")),
+                            replyToMessageId = it.getString(it.getColumnIndexOrThrow("reply_to_id")),
+                            replyToSnippet = it.getString(it.getColumnIndexOrThrow("reply_to_snippet")),
+                            reactions = reactionsMap,
+                            isEdited = it.getInt(it.getColumnIndexOrThrow("is_edited")) == 1,
+                            expiresAt = if (it.isNull(it.getColumnIndexOrThrow("expires_at"))) null else it.getLong(it.getColumnIndexOrThrow("expires_at")),
+                            isEncrypted = it.getInt(it.getColumnIndexOrThrow("is_encrypted")) == 1
+                        )
                     )
-                )
+                }
             }
+            val currentMap = _messagesFlow.value.toMutableMap()
+            currentMap[convId] = list
+            _messagesFlow.value = currentMap
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "loadMessagesForConversation failed", e)
         }
-        val currentMap = _messagesFlow.value.toMutableMap()
-        currentMap[convId] = list
-        _messagesFlow.value = currentMap
         return list
     }
 
     fun saveMessage(msg: Message) {
-        val db = writableDatabase
-        db.execSQL(
-            """
-            INSERT OR REPLACE INTO messages (id, conversation_id, sender_id, recipient_id, text, media_uri, media_type, media_size, status, timestamp, reply_to_id, reply_to_snippet, reactions_json, is_edited, expires_at, is_encrypted)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """.trimIndent(),
-            arrayOf<Any?>(
-                msg.id,
-                msg.conversationId,
-                msg.senderId,
-                msg.recipientId,
-                msg.text,
-                msg.mediaUri,
-                msg.mediaType,
-                msg.mediaSizeBytes,
-                msg.status.name,
-                msg.timestamp,
-                msg.replyToMessageId,
-                msg.replyToSnippet,
-                json.encodeToString(msg.reactions),
-                if (msg.isEdited) 1 else 0,
-                msg.expiresAt,
-                if (msg.isEncrypted) 1 else 0
-            )
-        )
-        // Update or insert conversation snippet
-        val convSnippet = if (msg.mediaType != null) "[${msg.mediaType}] ${msg.text}" else msg.text
-        val cursor = db.rawQuery("SELECT id FROM conversations WHERE id = ?", arrayOf(msg.conversationId))
-        val exists = cursor.use { it.moveToFirst() }
-        if (!exists) {
-            val peerId = if (msg.senderId == "me" || msg.senderId.startsWith("u_")) msg.recipientId else msg.senderId
-            val contactCursor = db.rawQuery("SELECT display_name, avatar_url FROM contacts WHERE user_id = ?", arrayOf(peerId))
-            val (title, avatarUrl) = contactCursor.use {
-                if (it.moveToFirst()) {
-                    Pair(it.getString(0) ?: "Secure Chat", it.getString(1))
-                } else {
-                    Pair("User ${peerId.takeLast(4)}", null)
-                }
-            }
+        try {
+            val db = writableDatabase
             db.execSQL(
                 """
-                INSERT INTO conversations (id, type, title, participant_ids, last_snippet, last_message_timestamp, unread_count, is_pinned, is_archived, is_locked, disappearing_duration, avatar_url)
-                VALUES (?, 'DIRECT', ?, ?, ?, ?, 0, 0, 0, 0, NULL, ?)
+                INSERT OR REPLACE INTO messages (id, conversation_id, sender_id, recipient_id, text, media_uri, media_type, media_size, status, timestamp, reply_to_id, reply_to_snippet, reactions_json, is_edited, expires_at, is_encrypted)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """.trimIndent(),
-                arrayOf<Any?>(msg.conversationId, title, json.encodeToString(listOf(peerId)), convSnippet, msg.timestamp, avatarUrl)
+                arrayOf<Any?>(
+                    msg.id,
+                    msg.conversationId,
+                    msg.senderId,
+                    msg.recipientId,
+                    msg.text,
+                    msg.mediaUri,
+                    msg.mediaType,
+                    msg.mediaSizeBytes,
+                    msg.status.name,
+                    msg.timestamp,
+                    msg.replyToMessageId,
+                    msg.replyToSnippet,
+                    json.encodeToString(msg.reactions),
+                    if (msg.isEdited) 1 else 0,
+                    msg.expiresAt,
+                    if (msg.isEncrypted) 1 else 0
+                )
             )
-        } else {
-            db.execSQL(
-                "UPDATE conversations SET last_snippet = ?, last_message_timestamp = ? WHERE id = ?",
-                arrayOf<Any?>(convSnippet, msg.timestamp, msg.conversationId)
-            )
+
+            val existingConv = loadConversations().firstOrNull { it.id == msg.conversationId }
+            val convSnippet = if (msg.mediaType != null) "[${msg.mediaType}] ${msg.text}" else msg.text
+            if (existingConv == null) {
+                val peerId = if (msg.senderId == "me") msg.recipientId else msg.senderId
+                val contact = loadContacts().firstOrNull { it.userId == peerId }
+                val title = contact?.displayName ?: "Direct Chat"
+                val avatarUrl = contact?.avatarUrl
+                db.execSQL(
+                    """
+                    INSERT INTO conversations (id, type, title, participant_ids, last_snippet, last_message_timestamp, unread_count, is_pinned, is_archived, is_locked, disappearing_duration, avatar_url)
+                    VALUES (?, 'DIRECT', ?, ?, ?, ?, 0, 0, 0, 0, NULL, ?)
+                    """.trimIndent(),
+                    arrayOf<Any?>(msg.conversationId, title, json.encodeToString(listOf(peerId)), convSnippet, msg.timestamp, avatarUrl)
+                )
+            } else {
+                db.execSQL(
+                    "UPDATE conversations SET last_snippet = ?, last_message_timestamp = ? WHERE id = ?",
+                    arrayOf<Any?>(convSnippet, msg.timestamp, msg.conversationId)
+                )
+            }
+            loadMessagesForConversation(msg.conversationId)
+            loadConversations()
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "saveMessage failed: ${e.message}", e)
         }
-        loadMessagesForConversation(msg.conversationId)
-        loadConversations()
     }
 
     fun updateMessageStatus(messageId: String, status: MessageStatus) {
-        val db = writableDatabase
-        db.execSQL("UPDATE messages SET status = ? WHERE id = ?", arrayOf(status.name, messageId))
-        // Reload in-memory
-        val currentMap = _messagesFlow.value.toMutableMap()
-        for ((convId, list) in currentMap) {
-            val idx = list.indexOfFirst { it.id == messageId }
-            if (idx != -1) {
-                loadMessagesForConversation(convId)
-                break
+        try {
+            val db = writableDatabase
+            db.execSQL("UPDATE messages SET status = ? WHERE id = ?", arrayOf(status.name, messageId))
+            // Reload in-memory
+            val currentMap = _messagesFlow.value.toMutableMap()
+            for ((convId, list) in currentMap) {
+                val idx = list.indexOfFirst { it.id == messageId }
+                if (idx != -1) {
+                    loadMessagesForConversation(convId)
+                    break
+                }
             }
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "updateMessageStatus failed", e)
         }
     }
 
     fun deleteMessage(messageId: String, convId: String) {
-        val db = writableDatabase
-        db.execSQL("DELETE FROM messages WHERE id = ?", arrayOf(messageId))
-        loadMessagesForConversation(convId)
-        loadConversations()
+        try {
+            val db = writableDatabase
+            db.execSQL("DELETE FROM messages WHERE id = ?", arrayOf(messageId))
+            loadMessagesForConversation(convId)
+            loadConversations()
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "deleteMessage failed", e)
+        }
     }
 
     // --- Contacts CRUD ---
 
     fun loadContacts(): List<Contact> {
         val list = mutableListOf<Contact>()
-        val db = readableDatabase
-        val cursor = db.rawQuery("SELECT * FROM contacts ORDER BY display_name ASC", null)
-        cursor.use {
-            while (it.moveToNext()) {
-                list.add(
-                    Contact(
-                        id = it.getString(it.getColumnIndexOrThrow("id")),
-                        userId = it.getString(it.getColumnIndexOrThrow("user_id")),
-                        displayName = it.getString(it.getColumnIndexOrThrow("display_name")),
-                        phoneNumber = it.getString(it.getColumnIndexOrThrow("phone_number")),
-                        username = it.getString(it.getColumnIndexOrThrow("username")),
-                        avatarUrl = it.getString(it.getColumnIndexOrThrow("avatar_url")),
-                        identityKeyBase64 = it.getString(it.getColumnIndexOrThrow("identity_key")) ?: "",
-                        isVerified = it.getInt(it.getColumnIndexOrThrow("is_verified")) == 1,
-                        safetyNumber = it.getString(it.getColumnIndexOrThrow("safety_number")),
-                        isOnline = it.getInt(it.getColumnIndexOrThrow("is_online")) == 1,
-                        lastSeen = it.getLong(it.getColumnIndexOrThrow("last_seen"))
+        try {
+            val db = readableDatabase
+            val cursor = db.rawQuery("SELECT * FROM contacts ORDER BY display_name ASC", null)
+            cursor.use {
+                while (it.moveToNext()) {
+                    list.add(
+                        Contact(
+                            id = it.getString(it.getColumnIndexOrThrow("id")),
+                            userId = it.getString(it.getColumnIndexOrThrow("user_id")),
+                            displayName = it.getString(it.getColumnIndexOrThrow("display_name")),
+                            phoneNumber = it.getString(it.getColumnIndexOrThrow("phone_number")),
+                            username = it.getString(it.getColumnIndexOrThrow("username")),
+                            avatarUrl = it.getString(it.getColumnIndexOrThrow("avatar_url")),
+                            identityKeyBase64 = it.getString(it.getColumnIndexOrThrow("identity_key")) ?: "",
+                            isVerified = it.getInt(it.getColumnIndexOrThrow("is_verified")) == 1,
+                            safetyNumber = it.getString(it.getColumnIndexOrThrow("safety_number")),
+                            isOnline = it.getInt(it.getColumnIndexOrThrow("is_online")) == 1,
+                            lastSeen = it.getLong(it.getColumnIndexOrThrow("last_seen"))
+                        )
                     )
-                )
+                }
             }
+            _contactsFlow.value = list
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "loadContacts failed", e)
         }
-        _contactsFlow.value = list
         return list
     }
 
     fun upsertContact(contact: Contact) {
-        val db = writableDatabase
-        db.execSQL(
-            """
-            INSERT OR REPLACE INTO contacts (id, user_id, display_name, phone_number, username, avatar_url, identity_key, is_verified, safety_number, is_online, last_seen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """.trimIndent(),
-            arrayOf<Any?>(
-                contact.id,
-                contact.userId,
-                contact.displayName,
-                contact.phoneNumber,
-                contact.username,
-                contact.avatarUrl,
-                contact.identityKeyBase64,
-                if (contact.isVerified) 1 else 0,
-                contact.safetyNumber,
-                if (contact.isOnline) 1 else 0,
-                contact.lastSeen
+        try {
+            val db = writableDatabase
+            db.execSQL(
+                """
+                INSERT OR REPLACE INTO contacts (id, user_id, display_name, phone_number, username, avatar_url, identity_key, is_verified, safety_number, is_online, last_seen)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """.trimIndent(),
+                arrayOf<Any?>(
+                    contact.id,
+                    contact.userId,
+                    contact.displayName,
+                    contact.phoneNumber ?: "",
+                    contact.username ?: "",
+                    contact.avatarUrl,
+                    contact.identityKeyBase64,
+                    if (contact.isVerified) 1 else 0,
+                    contact.safetyNumber,
+                    if (contact.isOnline) 1 else 0,
+                    contact.lastSeen
+                )
             )
-        )
-        loadContacts()
+            loadContacts()
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "upsertContact failed: ${e.message}", e)
+        }
     }
 
     // --- Vault CRUD ---
 
     fun loadVaultItems(): List<VaultItem> {
         val list = mutableListOf<VaultItem>()
-        val db = readableDatabase
-        val cursor = db.rawQuery("SELECT * FROM vault_items ORDER BY updated_at DESC", null)
-        cursor.use {
-            while (it.moveToNext()) {
-                list.add(
-                    VaultItem(
-                        id = it.getString(it.getColumnIndexOrThrow("id")),
-                        title = it.getString(it.getColumnIndexOrThrow("title")),
-                        type = VaultItemType.valueOf(it.getString(it.getColumnIndexOrThrow("type"))),
-                        contentOrPath = it.getString(it.getColumnIndexOrThrow("content_or_path")),
-                        fileSizeBytes = it.getLong(it.getColumnIndexOrThrow("file_size")),
-                        mimeType = it.getString(it.getColumnIndexOrThrow("mime_type")),
-                        createdAt = it.getLong(it.getColumnIndexOrThrow("created_at")),
-                        updatedAt = it.getLong(it.getColumnIndexOrThrow("updated_at")),
-                        isLocked = it.getInt(it.getColumnIndexOrThrow("is_locked")) == 1
+        try {
+            val db = readableDatabase
+            val cursor = db.rawQuery("SELECT * FROM vault_items ORDER BY updated_at DESC", null)
+            cursor.use {
+                while (it.moveToNext()) {
+                    val typeStr = it.getString(it.getColumnIndexOrThrow("type"))
+                    val vaultType = try {
+                        VaultItemType.valueOf(typeStr)
+                    } catch (e: Exception) {
+                        VaultItemType.FILE
+                    }
+
+                    list.add(
+                        VaultItem(
+                            id = it.getString(it.getColumnIndexOrThrow("id")),
+                            title = it.getString(it.getColumnIndexOrThrow("title")),
+                            type = vaultType,
+                            contentOrPath = it.getString(it.getColumnIndexOrThrow("content_or_path")),
+                            fileSizeBytes = it.getLong(it.getColumnIndexOrThrow("file_size")),
+                            mimeType = it.getString(it.getColumnIndexOrThrow("mime_type")),
+                            createdAt = it.getLong(it.getColumnIndexOrThrow("created_at")),
+                            updatedAt = it.getLong(it.getColumnIndexOrThrow("updated_at")),
+                            isLocked = it.getInt(it.getColumnIndexOrThrow("is_locked")) == 1
+                        )
                     )
-                )
+                }
             }
+            _vaultItemsFlow.value = list
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "loadVaultItems failed", e)
         }
-        _vaultItemsFlow.value = list
         return list
     }
 
     fun saveVaultItem(item: VaultItem) {
-        val db = writableDatabase
-        db.execSQL(
-            """
-            INSERT OR REPLACE INTO vault_items (id, title, type, content_or_path, file_size, mime_type, created_at, updated_at, is_locked)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """.trimIndent(),
-            arrayOf<Any?>(
-                item.id,
-                item.title,
-                item.type.name,
-                item.contentOrPath,
-                item.fileSizeBytes,
-                item.mimeType,
-                item.createdAt,
-                item.updatedAt,
-                if (item.isLocked) 1 else 0
+        try {
+            val db = writableDatabase
+            db.execSQL(
+                """
+                INSERT OR REPLACE INTO vault_items (id, title, type, content_or_path, file_size, mime_type, created_at, updated_at, is_locked)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """.trimIndent(),
+                arrayOf<Any?>(
+                    item.id,
+                    item.title,
+                    item.type.name,
+                    item.contentOrPath,
+                    item.fileSizeBytes,
+                    item.mimeType,
+                    item.createdAt,
+                    item.updatedAt,
+                    if (item.isLocked) 1 else 0
+                )
             )
-        )
-        loadVaultItems()
+            loadVaultItems()
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "saveVaultItem failed: ${e.message}", e)
+        }
     }
 
     fun deleteVaultItem(id: String) {
-        val db = writableDatabase
-        db.execSQL("DELETE FROM vault_items WHERE id = ?", arrayOf(id))
-        loadVaultItems()
+        try {
+            val db = writableDatabase
+            db.execSQL("DELETE FROM vault_items WHERE id = ?", arrayOf(id))
+            loadVaultItems()
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "deleteVaultItem failed: ${e.message}", e)
+        }
     }
 
     // --- Calls CRUD ---
 
     fun loadCalls(): List<CallRecord> {
         val list = mutableListOf<CallRecord>()
-        val db = readableDatabase
-        val cursor = db.rawQuery("SELECT * FROM calls ORDER BY timestamp DESC", null)
-        cursor.use {
-            while (it.moveToNext()) {
-                list.add(
-                    CallRecord(
-                        id = it.getString(it.getColumnIndexOrThrow("id")),
-                        peerId = it.getString(it.getColumnIndexOrThrow("peer_id")),
-                        peerName = it.getString(it.getColumnIndexOrThrow("peer_name")),
-                        peerAvatar = it.getString(it.getColumnIndexOrThrow("peer_avatar")),
-                        callType = CallType.valueOf(it.getString(it.getColumnIndexOrThrow("call_type"))),
-                        status = CallStatus.valueOf(it.getString(it.getColumnIndexOrThrow("status"))),
-                        durationSec = it.getInt(it.getColumnIndexOrThrow("duration")),
-                        timestamp = it.getLong(it.getColumnIndexOrThrow("timestamp"))
+        try {
+            val db = readableDatabase
+            val cursor = db.rawQuery("SELECT * FROM calls ORDER BY timestamp DESC", null)
+            cursor.use {
+                while (it.moveToNext()) {
+                    val callTypeStr = it.getString(it.getColumnIndexOrThrow("call_type"))
+                    val callType = try {
+                        CallType.valueOf(callTypeStr)
+                    } catch (e: Exception) {
+                        CallType.VOICE
+                    }
+
+                    val statusStr = it.getString(it.getColumnIndexOrThrow("status"))
+                    val callStatus = try {
+                        CallStatus.valueOf(statusStr)
+                    } catch (e: Exception) {
+                        CallStatus.ENDED
+                    }
+
+                    list.add(
+                        CallRecord(
+                            id = it.getString(it.getColumnIndexOrThrow("id")),
+                            peerId = it.getString(it.getColumnIndexOrThrow("peer_id")),
+                            peerName = it.getString(it.getColumnIndexOrThrow("peer_name")),
+                            peerAvatar = it.getString(it.getColumnIndexOrThrow("peer_avatar")),
+                            callType = callType,
+                            status = callStatus,
+                            durationSec = it.getInt(it.getColumnIndexOrThrow("duration")),
+                            timestamp = it.getLong(it.getColumnIndexOrThrow("timestamp"))
+                        )
                     )
-                )
+                }
             }
+            _callsFlow.value = list
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "loadCalls failed", e)
         }
-        _callsFlow.value = list
         return list
     }
 
     fun saveCall(call: CallRecord) {
-        val db = writableDatabase
-        db.execSQL(
-            """
-            INSERT OR REPLACE INTO calls (id, peer_id, peer_name, peer_avatar, call_type, status, duration, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """.trimIndent(),
-            arrayOf<Any?>(
-                call.id,
-                call.peerId,
-                call.peerName,
-                call.peerAvatar,
-                call.callType.name,
-                call.status.name,
-                call.durationSec,
-                call.timestamp
+        try {
+            val db = writableDatabase
+            db.execSQL(
+                """
+                INSERT OR REPLACE INTO calls (id, peer_id, peer_name, peer_avatar, call_type, status, duration, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """.trimIndent(),
+                arrayOf<Any?>(
+                    call.id,
+                    call.peerId,
+                    call.peerName,
+                    call.peerAvatar,
+                    call.callType.name,
+                    call.status.name,
+                    call.durationSec,
+                    call.timestamp
+                )
             )
-        )
-        loadCalls()
+            loadCalls()
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "saveCall failed: ${e.message}", e)
+        }
     }
 
     // --- Double Ratchet Sessions Persistence ---
 
     fun saveRatchetSession(peerUserId: String, serializedState: String) {
-        val db = writableDatabase
-        db.execSQL(
-            "INSERT OR REPLACE INTO ratchet_sessions (peer_user_id, session_data, updated_at) VALUES (?, ?, ?)",
-            arrayOf<Any?>(peerUserId, serializedState, System.currentTimeMillis())
-        )
+        try {
+            val db = writableDatabase
+            db.execSQL(
+                "INSERT OR REPLACE INTO ratchet_sessions (peer_user_id, session_data, updated_at) VALUES (?, ?, ?)",
+                arrayOf<Any?>(peerUserId, serializedState, System.currentTimeMillis())
+            )
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "saveRatchetSession failed: ${e.message}", e)
+        }
     }
 
     fun getRatchetSession(peerUserId: String): String? {
-        val db = readableDatabase
-        val cursor = db.rawQuery("SELECT session_data FROM ratchet_sessions WHERE peer_user_id = ?", arrayOf(peerUserId))
-        cursor.use {
-            if (it.moveToFirst()) {
-                return it.getString(0)
+        try {
+            val db = readableDatabase
+            val cursor = db.rawQuery("SELECT session_data FROM ratchet_sessions WHERE peer_user_id = ?", arrayOf(peerUserId))
+            cursor.use {
+                if (it.moveToFirst()) {
+                    return it.getString(0)
+                }
             }
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "getRatchetSession failed: ${e.message}", e)
         }
         return null
     }
 
     fun wipeAllData() {
-        val db = writableDatabase
-        db.execSQL("DELETE FROM messages")
-        db.execSQL("DELETE FROM conversations")
-        db.execSQL("DELETE FROM contacts")
-        db.execSQL("DELETE FROM vault_items")
-        db.execSQL("DELETE FROM calls")
-        db.execSQL("DELETE FROM ratchet_sessions")
-        reloadAll()
+        try {
+            val db = writableDatabase
+            db.execSQL("DELETE FROM messages")
+            db.execSQL("DELETE FROM conversations")
+            db.execSQL("DELETE FROM contacts")
+            db.execSQL("DELETE FROM vault_items")
+            db.execSQL("DELETE FROM calls")
+            db.execSQL("DELETE FROM ratchet_sessions")
+            reloadAll()
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "wipeAllData failed: ${e.message}", e)
+        }
     }
 }

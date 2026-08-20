@@ -72,6 +72,22 @@ export function createUsersRouter(db: ArgusDatabase): Router {
   });
 
   /**
+   * Permanently delete user account and all associated data (Google Play / GDPR compliance)
+   */
+  router.delete('/me', (req: Request, res: Response): void => {
+    const { userId } = (req as any).user;
+    notificationService.unregisterToken(userId);
+    const deleted = db.deleteUser(userId);
+
+    if (!deleted) {
+      res.status(404).json({ error: 'User account not found' });
+      return;
+    }
+
+    res.json({ success: true, message: 'Account and associated data deleted permanently' });
+  });
+
+  /**
    * Search users by username or display name (Privacy-safe: NEVER searches raw phone numbers)
    */
   router.get('/search', (req: Request, res: Response): void => {
@@ -85,7 +101,8 @@ export function createUsersRouter(db: ArgusDatabase): Router {
     for (const u of db.users.values()) {
       if (
         (u.username && u.username.toLowerCase().includes(query)) ||
-        u.displayName.toLowerCase().includes(query)
+        u.displayName.toLowerCase().includes(query) ||
+        u.id.toLowerCase().includes(query)
       ) {
         results.push({
           id: u.id,
@@ -116,11 +133,10 @@ export function createUsersRouter(db: ArgusDatabase): Router {
       return;
     }
 
-    const hashSet = new Set(parseResult.data.phoneHashes);
     const matched: any[] = [];
-
-    for (const u of db.users.values()) {
-      if (u.phoneHash && hashSet.has(u.phoneHash)) {
+    for (const hash of parseResult.data.phoneHashes) {
+      const u = db.findUserByPhoneHash(hash);
+      if (u) {
         matched.push({
           id: u.id,
           phoneHash: u.phoneHash,
@@ -152,6 +168,30 @@ export function createUsersRouter(db: ArgusDatabase): Router {
 
     notificationService.registerToken(userId, token.trim());
     res.json({ success: true, message: 'Push token registered' });
+  });
+
+  /**
+   * Get public profile of a user by userId (Must be declared after static sub-routes)
+   */
+  router.get('/:userId', (req: Request, res: Response): void => {
+    const targetUserId = req.params.userId as string;
+    const user = db.users.get(targetUserId);
+    if (!user) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    res.json({
+      user: {
+        id: user.id,
+        username: user.username,
+        displayName: user.displayName,
+        avatarUrl: user.avatarUrl,
+        about: user.about,
+        identityKeyBase64: user.identityKeyBase64,
+        isOnline: user.isOnline,
+        lastSeen: user.lastSeen
+      }
+    });
   });
 
   return router;

@@ -69,12 +69,20 @@ export function createApp(db: ArgusDatabase, customJwtSecret?: string) {
     message: { error: 'Too many requests, please slow down.' }
   });
 
-  const authRateLimiter = rateLimit({
+  const authSensitiveLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: isTest ? 10000 : 15,
+    max: isTest ? 10000 : 30,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many authentication attempts. Please try again later.' }
+  });
+
+  const usernameCheckLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: isTest ? 10000 : 120,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many username checks. Please try again in a moment.' }
   });
 
   app.use(generalLimiter);
@@ -99,7 +107,7 @@ export function createApp(db: ArgusDatabase, customJwtSecret?: string) {
     });
   });
 
-  // Auth Middleware for protected endpoints
+  // Auth Middleware for protected endpoints with active account validation
   const authMiddleware = (req: Request, res: Response, next: NextFunction): void => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -109,7 +117,12 @@ export function createApp(db: ArgusDatabase, customJwtSecret?: string) {
 
     const token = authHeader.substring(7);
     try {
-      const decoded = jwt.verify(token, activeJwtSecret);
+      const decoded = jwt.verify(token, activeJwtSecret) as { userId: string; username?: string; deviceId?: string };
+      const user = db.users.get(decoded.userId);
+      if (!user) {
+        res.status(401).json({ error: 'User account not found or has been deleted' });
+        return;
+      }
       (req as any).user = decoded;
       next();
     } catch (err) {
@@ -118,7 +131,13 @@ export function createApp(db: ArgusDatabase, customJwtSecret?: string) {
   };
 
   // Mount API Routers
-  app.use('/api/auth', authRateLimiter, createAuthRouter(db, activeJwtSecret));
+  app.use(
+    '/api/auth',
+    createAuthRouter(db, activeJwtSecret, {
+      sensitiveLimiter: authSensitiveLimiter,
+      checkUsernameLimiter: usernameCheckLimiter
+    })
+  );
   app.use('/api/keys', authMiddleware, createKeysRouter(db));
   app.use('/api/users', authMiddleware, createUsersRouter(db));
   app.use('/api/groups', authMiddleware, createGroupsRouter(db));
@@ -138,8 +157,9 @@ export function createApp(db: ArgusDatabase, customJwtSecret?: string) {
   return app;
 }
 
-export function startServer() {
+export async function startServer() {
   const db = new ArgusDatabase(DATA_DIR);
+  await db.init();
   const app = createApp(db);
   const server = http.createServer(app);
 
@@ -152,10 +172,15 @@ export function startServer() {
       ? 'Twilio SMS Gateway (Active 🚀)' 
       : 'Local Developer Console';
 
+    const dbMode = process.env.DATABASE_URL
+      ? 'Cloud PostgreSQL / Neon.tech (Persistent 🚀)'
+      : 'Local Zero-Knowledge JSON Store';
+
     console.log(`=========================================`);
     console.log(`  Argus E2EE Production Gateway Running  `);
     console.log(`  HTTP API:  http://0.0.0.0:${PORT}      `);
     console.log(`  WebSocket: ws://0.0.0.0:${PORT}/ws     `);
+    console.log(`  Database:  ${dbMode}                   `);
     console.log(`  SMS Mode:  ${smsStatus}                `);
     console.log(`  Health:    http://0.0.0.0:${PORT}/health`);
     console.log(`=========================================`);

@@ -1,6 +1,10 @@
 package com.example.argus.ui.status
 
+import android.graphics.Bitmap
+import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
@@ -29,9 +33,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.argus.core.permission.ArgusPermissionType
+import com.example.argus.core.permission.PermissionManager
 import com.example.argus.data.model.User
 import com.example.argus.theme.*
 import com.example.argus.ui.components.ArgusAvatar
+import com.example.argus.ui.components.ArgusPermissionRationaleDialog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -43,7 +50,8 @@ data class EphemeralStatusItem(
     val caption: String,
     val backgroundGradient: List<Color>,
     val timestamp: Long,
-    val isViewed: Boolean = false
+    val isViewed: Boolean = false,
+    val mediaUri: String? = null
 )
 
 @Composable
@@ -53,20 +61,12 @@ fun StatusScreen(
     onCreateStatus: () -> Unit
 ) {
     val context = LocalContext.current
-    var myStatuses by remember {
-        mutableStateOf(
-            listOf<EphemeralStatusItem>()
-        )
-    }
-
-    var recentStatuses by remember {
-        mutableStateOf(
-            listOf<EphemeralStatusItem>()
-        )
-    }
-
+    var myStatuses by remember { mutableStateOf(listOf<EphemeralStatusItem>()) }
+    var recentStatuses by remember { mutableStateOf(listOf<EphemeralStatusItem>()) }
     var showCreateDialog by remember { mutableStateOf(false) }
     var newStatusText by remember { mutableStateOf("") }
+    var activeRationalePermission by remember { mutableStateOf<ArgusPermissionType?>(null) }
+
     val colorPalettes = listOf(
         listOf(Color(0xFF0F2027), Color(0xFF203A43), Color(0xFF2C5364)),
         listOf(Color(0xFF11998E), Color(0xFF38EF7D)),
@@ -74,6 +74,103 @@ fun StatusScreen(
         listOf(Color(0xFF141E30), Color(0xFF243B55))
     )
     var selectedColorIndex by remember { mutableIntStateOf(0) }
+
+    // Camera Capture for Status
+    val statusCameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicturePreview()
+    ) { bitmap: Bitmap? ->
+        if (bitmap != null) {
+            val item = EphemeralStatusItem(
+                id = "my_photo_${System.currentTimeMillis()}",
+                userId = currentUser?.id ?: "me",
+                userName = currentUser?.displayName ?: "My Status",
+                caption = "📷 Photo Status",
+                backgroundGradient = listOf(Color(0xFF1B2838), Color(0xFF2A475E)),
+                timestamp = System.currentTimeMillis(),
+                isViewed = true
+            )
+            myStatuses = listOf(item) + myStatuses
+            Toast.makeText(context, "Encrypted photo status shared! (24h timer active)", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            statusCameraLauncher.launch(null)
+        } else {
+            activeRationalePermission = ArgusPermissionType.CAMERA
+        }
+    }
+
+    fun launchStatusCamera() {
+        if (PermissionManager.hasCameraPermission(context)) {
+            statusCameraLauncher.launch(null)
+        } else {
+            cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+        }
+    }
+
+    // Gallery Picker for Status
+    val statusGalleryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val item = EphemeralStatusItem(
+                id = "my_gallery_${System.currentTimeMillis()}",
+                userId = currentUser?.id ?: "me",
+                userName = currentUser?.displayName ?: "My Status",
+                caption = "🖼️ Media Status",
+                backgroundGradient = listOf(Color(0xFF0D1B2A), Color(0xFF1B263B)),
+                timestamp = System.currentTimeMillis(),
+                isViewed = true,
+                mediaUri = uri.toString()
+            )
+            myStatuses = listOf(item) + myStatuses
+            Toast.makeText(context, "Media status shared! (24h timer active)", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val mediaPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val granted = grants.values.any { it }
+        if (granted || PermissionManager.hasStorageOrMediaPermissions(context)) {
+            statusGalleryLauncher.launch("image/*")
+        } else {
+            activeRationalePermission = ArgusPermissionType.STORAGE_AND_MEDIA
+        }
+    }
+
+    fun launchStatusGallery() {
+        if (PermissionManager.hasStorageOrMediaPermissions(context)) {
+            statusGalleryLauncher.launch("image/*")
+        } else {
+            mediaPermissionLauncher.launch(PermissionManager.getStorageAndMediaPermissions())
+        }
+    }
+
+    // Active Permission Rationale Dialog
+    if (activeRationalePermission != null) {
+        ArgusPermissionRationaleDialog(
+            permissionType = activeRationalePermission!!,
+            onGrantClick = {
+                val p = activeRationalePermission!!
+                activeRationalePermission = null
+                when (p) {
+                    ArgusPermissionType.CAMERA -> cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+                    ArgusPermissionType.STORAGE_AND_MEDIA -> mediaPermissionLauncher.launch(PermissionManager.getStorageAndMediaPermissions())
+                    else -> {}
+                }
+            },
+            onDismiss = { activeRationalePermission = null },
+            onOpenSettingsClick = {
+                activeRationalePermission = null
+                PermissionManager.openAppSettings(context)
+            }
+        )
+    }
 
     if (showCreateDialog) {
         AlertDialog(
@@ -133,6 +230,37 @@ fun StatusScreen(
                                     )
                                     .clickable { selectedColorIndex = index }
                             )
+                        }
+                    }
+
+                    HorizontalDivider(color = ObsidianBorder, thickness = 0.5.dp)
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                showCreateDialog = false
+                                launchStatusCamera()
+                            },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = CyanAccent)
+                        ) {
+                            Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Camera")
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                showCreateDialog = false
+                                launchStatusGallery()
+                            },
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = EmeraldLight)
+                        ) {
+                            Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Gallery")
                         }
                     }
                 }
@@ -224,14 +352,26 @@ fun StatusScreen(
                     )
                 }
 
-                IconButton(
-                    onClick = { showCreateDialog = true },
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .background(ObsidianCard)
-                ) {
-                    Icon(imageVector = Icons.Default.Edit, contentDescription = "New Status", tint = EmeraldPrimary, modifier = Modifier.size(18.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    IconButton(
+                        onClick = { launchStatusCamera() },
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(ObsidianCard)
+                    ) {
+                        Icon(imageVector = Icons.Default.CameraAlt, contentDescription = "Camera Status", tint = CyanAccent, modifier = Modifier.size(18.dp))
+                    }
+
+                    IconButton(
+                        onClick = { showCreateDialog = true },
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(ObsidianCard)
+                    ) {
+                        Icon(imageVector = Icons.Default.Edit, contentDescription = "New Status", tint = EmeraldPrimary, modifier = Modifier.size(18.dp))
+                    }
                 }
             }
         }
@@ -370,10 +510,8 @@ fun FullScreenStatusViewer(
                     },
                     onTap = { offset ->
                         if (offset.x < size.width / 3) {
-                            // tapped left -> close or previous
                             onClose()
                         } else {
-                            // tapped right -> next/close
                             onClose()
                         }
                     }

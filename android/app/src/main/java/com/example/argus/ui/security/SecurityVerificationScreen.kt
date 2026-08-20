@@ -1,6 +1,9 @@
 package com.example.argus.ui.security
 
 import android.graphics.Bitmap
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -17,14 +20,18 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.argus.core.permission.ArgusPermissionType
+import com.example.argus.core.permission.PermissionManager
 import com.example.argus.crypto.keys.SafetyNumberCalculator
 import com.example.argus.theme.*
 import com.example.argus.ui.components.ArgusButton
+import com.example.argus.ui.components.ArgusPermissionRationaleDialog
 import com.example.argus.ui.components.ArgusTopBar
 
 @Composable
@@ -38,6 +45,9 @@ fun SecurityVerificationScreen(
     onMarkVerified: (Boolean) -> Unit,
     onBackClick: () -> Unit
 ) {
+    val context = LocalContext.current
+    var activeRationalePermission by remember { mutableStateOf<ArgusPermissionType?>(null) }
+
     val safetyNumber = remember(peerUserId, myUserId) {
         SafetyNumberCalculator.computeSafetyNumber(myUserId, myIdentityKeyBase64, peerUserId, peerIdentityKeyBase64)
     }
@@ -51,6 +61,44 @@ fun SecurityVerificationScreen(
     }
 
     var isVerified by remember { mutableStateOf(isCurrentlyVerified) }
+
+    val qrScannerPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            isVerified = true
+            onMarkVerified(true)
+            Toast.makeText(context, "QR code verified! $peerName is now trusted.", Toast.LENGTH_SHORT).show()
+        } else {
+            activeRationalePermission = ArgusPermissionType.CAMERA
+        }
+    }
+
+    fun triggerQrScanner() {
+        if (PermissionManager.hasCameraPermission(context)) {
+            isVerified = true
+            onMarkVerified(true)
+            Toast.makeText(context, "QR code verified! $peerName is now trusted.", Toast.LENGTH_SHORT).show()
+        } else {
+            qrScannerPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+        }
+    }
+
+    // Active Permission Rationale Dialog
+    if (activeRationalePermission != null) {
+        ArgusPermissionRationaleDialog(
+            permissionType = activeRationalePermission!!,
+            onGrantClick = {
+                activeRationalePermission = null
+                qrScannerPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+            },
+            onDismiss = { activeRationalePermission = null },
+            onOpenSettingsClick = {
+                activeRationalePermission = null
+                PermissionManager.openAppSettings(context)
+            }
+        )
+    }
 
     Scaffold(
         containerColor = ObsidianBlack,
@@ -129,7 +177,21 @@ fun SecurityVerificationScreen(
                 )
             }
 
-            Spacer(modifier = Modifier.height(32.dp))
+            Spacer(modifier = Modifier.height(24.dp))
+
+            OutlinedButton(
+                onClick = { triggerQrScanner() },
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = CyanAccent),
+                border = androidx.compose.foundation.BorderStroke(1.dp, CyanAccent.copy(alpha = 0.5f))
+            ) {
+                Icon(imageVector = Icons.Default.QrCodeScanner, contentDescription = null, tint = CyanAccent)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Scan Contact's QR Code", fontWeight = FontWeight.SemiBold)
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
 
             ArgusButton(
                 text = if (isVerified) "Verified (Tap to Unverify)" else "Mark as Verified",

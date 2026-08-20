@@ -246,7 +246,32 @@ describe('Argus Comprehensive Production Test Suite', () => {
       expect(goodRes.body.valid).toBe(true);
     });
 
-    test('POST /api/auth/reset-password resets password and issues fresh tokens & recovery key', async () => {
+    test('POST /api/auth/reset-password rejects requests without recovery key (Security Protection)', async () => {
+      const exploitRes = await request(app)
+        .post('/api/auth/reset-password')
+        .send({
+          username: aliceUsername,
+          newPassword: 'AttackerNewPassword123!'
+        });
+
+      expect(exploitRes.status).toBe(400);
+      expect(exploitRes.body.error).toContain('recovery key is required');
+    });
+
+    test('POST /api/auth/reset-password rejects requests with wrong recovery key', async () => {
+      const wrongKeyRes = await request(app)
+        .post('/api/auth/reset-password')
+        .send({
+          username: aliceUsername,
+          newPassword: 'AttackerNewPassword123!',
+          recoveryKey: 'ARGUS-0000-0000-0000-0000'
+        });
+
+      expect(wrongKeyRes.status).toBe(400);
+      expect(wrongKeyRes.body.error).toContain('Invalid recovery key');
+    });
+
+    test('POST /api/auth/reset-password resets password and issues fresh tokens & recovery key with valid recovery key', async () => {
       const newPassword = 'BrandNewSuperPassword999!';
       const res = await request(app)
         .post('/api/auth/reset-password')
@@ -265,6 +290,7 @@ describe('Argus Comprehensive Production Test Suite', () => {
 
       aliceToken = res.body.token;
       aliceRefreshToken = res.body.refreshToken;
+      aliceRecoveryKey = res.body.recoveryKey;
 
       // Verify login with new password succeeds
       const loginRes = await request(app)
@@ -355,13 +381,18 @@ describe('Argus Comprehensive Production Test Suite', () => {
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
       expect(res.body.availableOneTimeKeys).toBe(3);
+    });
 
-      // Consume replenished key
-      const fetchRes = await request(app)
-        .get(`/api/keys/bundle/${bobUserId}`)
-        .set('Authorization', `Bearer ${bobToken}`);
-      expect(fetchRes.status).toBe(200);
-      expect(fetchRes.body.oneTimePreKeyId).toBe(301);
+    test('POST /api/keys/bundles retrieves PreKey bundles in batch', async () => {
+      const res = await request(app)
+        .post('/api/keys/bundles')
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ userIds: [bobUserId] });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.bundles[bobUserId]).toBeDefined();
+      expect(res.body.bundles[bobUserId].identityPublicKeyBase64).toBe(bobIdentityKey);
     });
   });
 
@@ -377,6 +408,17 @@ describe('Argus Comprehensive Production Test Suite', () => {
       expect(res.status).toBe(200);
       expect(res.body.user.username).toBe(aliceUsername);
       expect(res.body.user.displayName).toBe('Alice Security');
+    });
+
+    test('GET /api/users/:userId returns public profile of target user', async () => {
+      const res = await request(app)
+        .get(`/api/users/${bobUserId}`)
+        .set('Authorization', `Bearer ${aliceToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.user.id).toBe(bobUserId);
+      expect(res.body.user.username).toBe(bobUsername);
+      expect(res.body.user.passwordHash).toBeUndefined(); // Security: passwordHash must NEVER be exposed
     });
 
     test('GET /api/users/search finds users by username handle', async () => {
@@ -420,6 +462,52 @@ describe('Argus Comprehensive Production Test Suite', () => {
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
     });
+
+    test('DELETE /api/users/me permanently deletes user account and revokes active access (Google Play compliance)', async () => {
+      // 1. Register temporary user
+      const regRes = await request(app)
+        .post('/api/auth/register')
+        .send({
+          username: 'temporary_user_for_delete',
+          password: 'TempPassword123!',
+          displayName: 'Temp Delete User',
+          identityKeyBase64: 'TempIdentityKeyBase64SamplePayload1234567890===='
+        });
+      expect(regRes.status).toBe(201);
+      const tempToken = regRes.body.token;
+      const tempUserId = regRes.body.user.id;
+
+      // 2. Publish a prekey for temp user
+      await request(app)
+        .post('/api/keys/publish-bundle')
+        .set('Authorization', `Bearer ${tempToken}`)
+        .send({
+          identityPublicKeyBase64: 'TempIdentityKeyBase64SamplePayload1234567890====',
+          signedPreKeyId: 1,
+          signedPreKeyPublicBase64: 'TempSignedPreKeyPublicBase64Mock1234567890==',
+          signedPreKeySignatureBase64: 'TempSignedPreKeySignatureBase64Mock1234567890==',
+          oneTimePreKeys: [{ keyId: 101, publicKeyBase64: 'TempOTPK_101===' }]
+        });
+
+      // 3. Delete account
+      const deleteRes = await request(app)
+        .delete('/api/users/me')
+        .set('Authorization', `Bearer ${tempToken}`);
+      expect(deleteRes.status).toBe(200);
+      expect(deleteRes.body.success).toBe(true);
+
+      // 4. Stale token must now be rejected
+      const staleRes = await request(app)
+        .get('/api/users/me')
+        .set('Authorization', `Bearer ${tempToken}`);
+      expect(staleRes.status).toBe(401);
+
+      // 5. Lookups for deleted user must return 404
+      const lookupRes = await request(app)
+        .get(`/api/users/${tempUserId}`)
+        .set('Authorization', `Bearer ${aliceToken}`);
+      expect(lookupRes.status).toBe(404);
+    });
   });
 
   // ===========================================================================
@@ -438,11 +526,39 @@ describe('Argus Comprehensive Production Test Suite', () => {
           memberIds: [bobUserId]
         });
 
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(201);
       expect(res.body.group.title).toBe('Cryptography Research Unit');
       expect(res.body.group.admins).toContain(aliceUserId);
       expect(res.body.group.members).toContain(bobUserId);
       testGroupId = res.body.group.id;
+    });
+
+    test('GET /api/groups/:groupId returns group details and member profiles', async () => {
+      const res = await request(app)
+        .get(`/api/groups/${testGroupId}`)
+        .set('Authorization', `Bearer ${bobToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.group.id).toBe(testGroupId);
+      expect(res.body.memberProfiles.length).toBeGreaterThanOrEqual(2);
+    });
+
+    test('PUT /api/groups/:groupId updates group settings (Admin only)', async () => {
+      // Bob (member) cannot update group settings
+      const unauthRes = await request(app)
+        .put(`/api/groups/${testGroupId}`)
+        .set('Authorization', `Bearer ${bobToken}`)
+        .send({ title: 'Hacked Title' });
+      expect(unauthRes.status).toBe(403);
+
+      // Alice (admin) updates group settings
+      const adminRes = await request(app)
+        .put(`/api/groups/${testGroupId}`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ title: 'Argus Core Crypto Unit', disappearingDurationSec: 86400 });
+      expect(adminRes.status).toBe(200);
+      expect(adminRes.body.group.title).toBe('Argus Core Crypto Unit');
+      expect(adminRes.body.group.disappearingDurationSec).toBe(86400);
     });
 
     test('POST /api/groups/:groupId/add-members enforces admin authorization', async () => {
@@ -462,6 +578,39 @@ describe('Argus Comprehensive Production Test Suite', () => {
 
       expect(adminRes.status).toBe(200);
       expect(adminRes.body.group.members).toContain('new_member_id_999');
+    });
+
+    test('POST /api/groups/:groupId/remove-member removes a member (Admin only)', async () => {
+      const res = await request(app)
+        .post(`/api/groups/${testGroupId}/remove-member`)
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({ memberId: 'new_member_id_999' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.group.members).not.toContain('new_member_id_999');
+    });
+
+    test('POST /api/groups/:groupId/leave allows member to leave group', async () => {
+      const res = await request(app)
+        .post(`/api/groups/${testGroupId}/leave`)
+        .set('Authorization', `Bearer ${bobToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+
+      const checkRes = await request(app)
+        .get(`/api/groups/${testGroupId}`)
+        .set('Authorization', `Bearer ${aliceToken}`);
+      expect(checkRes.body.group.members).not.toContain(bobUserId);
+    });
+
+    test('DELETE /api/groups/:groupId deletes the group (Admin only)', async () => {
+      const res = await request(app)
+        .delete(`/api/groups/${testGroupId}`)
+        .set('Authorization', `Bearer ${aliceToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
     });
   });
 

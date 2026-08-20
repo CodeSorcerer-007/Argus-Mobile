@@ -3,6 +3,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import jwt from 'jsonwebtoken';
 import { ArgusDatabase } from '../db/database';
 import { WsClientEvent, WsServerEvent, EncryptedMessagePayload } from '../types';
+import { notificationService } from '../services/notificationService';
 
 interface AuthenticatedSocket extends WebSocket {
   userId?: string;
@@ -70,6 +71,13 @@ export class ArgusWebSocketManager {
     if (event.type === 'AUTH') {
       try {
         const decoded = jwt.verify(event.token, this.jwtSecret) as { userId: string; deviceId: string };
+        const user = this.db.users.get(decoded.userId);
+        if (!user) {
+          this.send(ws, { type: 'AUTH_ERROR', message: 'User account not found' });
+          ws.close();
+          return;
+        }
+
         ws.userId = decoded.userId;
         ws.deviceId = event.deviceId || decoded.deviceId;
 
@@ -79,20 +87,20 @@ export class ArgusWebSocketManager {
         this.userSockets.get(ws.userId)!.add(ws);
 
         // Update presence
-        const user = this.db.users.get(ws.userId);
-        if (user) {
-          user.isOnline = true;
-          user.lastSeen = Date.now();
-          this.db.save();
-          this.broadcastPresence(ws.userId, true, user.lastSeen);
-        }
+        user.isOnline = true;
+        user.lastSeen = Date.now();
+        this.db.scheduleSave();
+        this.broadcastPresence(ws.userId, true, user.lastSeen);
 
         this.send(ws, { type: 'AUTH_SUCCESS', userId: ws.userId });
 
-        // Deliver any queued offline messages
+        // Deliver any queued offline messages (filtering expired ones)
+        const now = Date.now();
         const offlineMsgs = this.db.getOfflineMessages(ws.userId);
         offlineMsgs.forEach(msg => {
-          this.send(ws, { type: 'NEW_MESSAGE', payload: msg });
+          if (!msg.expiresAt || msg.expiresAt > now) {
+            this.send(ws, { type: 'NEW_MESSAGE', payload: msg });
+          }
         });
       } catch (err) {
         this.send(ws, { type: 'AUTH_ERROR', message: 'Invalid or expired auth token' });
@@ -113,11 +121,13 @@ export class ArgusWebSocketManager {
       }
 
       case 'SEND_MESSAGE': {
+        if (!event.payload) break;
         this.handleSendMessage(ws, event.payload);
         break;
       }
 
       case 'ACK_DELIVERED': {
+        if (!event.senderId || !event.messageId) break;
         this.relayStatusToSender(event.senderId, event.messageId, 'DELIVERED');
         break;
       }
@@ -134,6 +144,10 @@ export class ArgusWebSocketManager {
       }
 
       case 'CALL_OFFER': {
+        const caller = this.db.users.get(ws.userId);
+        const targetSockets = this.userSockets.get(event.targetUserId);
+        const isTargetOnline = targetSockets && targetSockets.size > 0;
+
         this.relayToUser(event.targetUserId, {
           type: 'INCOMING_CALL',
           callerId: ws.userId,
@@ -141,6 +155,16 @@ export class ArgusWebSocketManager {
           callType: event.callType,
           sdp: event.sdp
         });
+
+        // Dispatch high-priority wakeup push notification if callee is offline
+        if (!isTargetOnline) {
+          notificationService.sendWakeup(event.targetUserId, {
+            type: 'INCOMING_CALL',
+            senderId: ws.userId,
+            senderName: caller?.displayName || 'Argus Contact',
+            callType: event.callType
+          });
+        }
         break;
       }
 
@@ -175,6 +199,47 @@ export class ArgusWebSocketManager {
   }
 
   private handleSendMessage(senderWs: AuthenticatedSocket, payload: EncryptedMessagePayload): void {
+    if (!payload || !payload.id || !payload.recipientId) {
+      return;
+    }
+    const senderUser = senderWs.userId ? this.db.users.get(senderWs.userId) : undefined;
+
+    // Check if recipient is a group
+    const group = this.db.groups.get(payload.recipientId) || this.db.groups.get(payload.conversationId);
+    if (group && senderWs.userId && group.members.includes(senderWs.userId)) {
+      // Fan out message to all group members except sender
+      group.members.forEach(memberId => {
+        if (memberId === senderWs.userId) return;
+
+        const memberSockets = this.userSockets.get(memberId);
+        let delivered = false;
+
+        if (memberSockets && memberSockets.size > 0) {
+          memberSockets.forEach(sock => {
+            if (sock.readyState === WebSocket.OPEN) {
+              this.send(sock, { type: 'NEW_MESSAGE', payload: { ...payload, status: 'DELIVERED' } });
+              delivered = true;
+            }
+          });
+        }
+
+        if (!delivered) {
+          this.db.queueOfflineMessage(memberId, { ...payload, status: 'SENT' });
+          notificationService.sendWakeup(memberId, {
+            type: 'NEW_MESSAGE',
+            senderId: senderWs.userId || payload.senderId,
+            senderName: senderUser?.displayName || 'Argus Contact',
+            conversationId: payload.conversationId,
+            messageId: payload.id
+          });
+        }
+      });
+
+      this.send(senderWs, { type: 'MESSAGE_STATUS', messageId: payload.id, status: 'SENT' });
+      return;
+    }
+
+    // Direct 1-to-1 message
     const recipientSockets = this.userSockets.get(payload.recipientId);
 
     if (recipientSockets && recipientSockets.size > 0) {
@@ -192,9 +257,17 @@ export class ArgusWebSocketManager {
       }
     }
 
-    // Recipient is offline: buffer in encrypted offline storage
+    // Recipient is offline: buffer in encrypted offline storage and dispatch FCM push wakeup
     this.db.queueOfflineMessage(payload.recipientId, { ...payload, status: 'SENT' });
     this.send(senderWs, { type: 'MESSAGE_STATUS', messageId: payload.id, status: 'SENT' });
+
+    notificationService.sendWakeup(payload.recipientId, {
+      type: 'NEW_MESSAGE',
+      senderId: payload.senderId,
+      senderName: senderUser?.displayName || 'Argus Contact',
+      conversationId: payload.conversationId,
+      messageId: payload.id
+    });
   }
 
   private relayStatusToSender(senderId: string, messageId: string, status: 'DELIVERED' | 'READ'): void {
@@ -209,7 +282,22 @@ export class ArgusWebSocketManager {
   }
 
   private relayTyping(senderId: string, recipientId: string, conversationId: string, isTyping: boolean): void {
-    const sockets = this.userSockets.get(recipientId);
+    // Check if recipient is a group
+    const group = this.db.groups.get(recipientId) || this.db.groups.get(conversationId);
+    if (group && group.members.includes(senderId)) {
+      group.members.forEach(memberId => {
+        if (memberId !== senderId) {
+          this.relayTypingToSingleUser(senderId, memberId, conversationId, isTyping);
+        }
+      });
+      return;
+    }
+
+    this.relayTypingToSingleUser(senderId, recipientId, conversationId, isTyping);
+  }
+
+  private relayTypingToSingleUser(senderId: string, targetUserId: string, conversationId: string, isTyping: boolean): void {
+    const sockets = this.userSockets.get(targetUserId);
     if (sockets) {
       sockets.forEach(s => {
         if (s.readyState === WebSocket.OPEN) {
@@ -251,7 +339,7 @@ export class ArgusWebSocketManager {
           if (user) {
             user.isOnline = false;
             user.lastSeen = Date.now();
-            this.db.save();
+            this.db.scheduleSave();
             this.broadcastPresence(ws.userId, false, user.lastSeen);
           }
         }

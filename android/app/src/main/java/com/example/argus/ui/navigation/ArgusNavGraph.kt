@@ -186,15 +186,24 @@ fun ArgusNavGraph(
                     },
                     onContactClick = { contact ->
                         coroutineScope.launch {
-                            val convId = container.authRepository.startConversationWithUser(
-                                User(
-                                    id = contact.userId,
-                                    username = contact.username ?: "",
-                                    displayName = contact.displayName,
-                                    phoneNumber = contact.phoneNumber
+                            try {
+                                val convId = container.authRepository.startConversationWithUser(
+                                    User(
+                                        id = contact.userId,
+                                        username = contact.username ?: "",
+                                        displayName = contact.displayName,
+                                        phoneNumber = contact.phoneNumber,
+                                        avatarUrl = contact.avatarUrl,
+                                        identityKeyBase64 = contact.identityKeyBase64,
+                                        isOnline = contact.isOnline,
+                                        lastSeen = contact.lastSeen
+                                    )
                                 )
-                            )
-                            currentScreen = Screen.Chat(convId)
+                                currentScreen = Screen.Chat(convId)
+                            } catch (e: Exception) {
+                                android.util.Log.e("ArgusNavGraph", "onContactClick error", e)
+                                currentScreen = Screen.Chat("conv_${contact.userId}")
+                            }
                         }
                     },
                     onStartCallClick = { contact, callType ->
@@ -233,15 +242,23 @@ fun ArgusNavGraph(
                     onBackClick = { currentScreen = Screen.Main },
                     onStartMessageClick = {
                         coroutineScope.launch {
-                            val convId = container.authRepository.startConversationWithUser(
-                                User(
-                                    id = screen.contact.userId,
-                                    username = screen.contact.username ?: "",
-                                    displayName = screen.contact.displayName,
-                                    phoneNumber = screen.contact.phoneNumber
+                            try {
+                                val convId = container.authRepository.startConversationWithUser(
+                                    User(
+                                        id = screen.contact.userId,
+                                        username = screen.contact.username ?: "",
+                                        displayName = screen.contact.displayName,
+                                        phoneNumber = screen.contact.phoneNumber,
+                                        avatarUrl = screen.contact.avatarUrl,
+                                        identityKeyBase64 = screen.contact.identityKeyBase64,
+                                        isOnline = screen.contact.isOnline,
+                                        lastSeen = screen.contact.lastSeen
+                                    )
                                 )
-                            )
-                            currentScreen = Screen.Chat(convId)
+                                currentScreen = Screen.Chat(convId)
+                            } catch (e: Exception) {
+                                currentScreen = Screen.Chat("conv_${screen.contact.userId}")
+                            }
                         }
                     },
                     onStartAudioCallClick = {
@@ -277,10 +294,24 @@ fun ArgusNavGraph(
                 BackHandler {
                     currentScreen = Screen.Main
                 }
+                val directPeerId = if (screen.conversationId.startsWith("conv_")) screen.conversationId.removePrefix("conv_") else null
+                val matchedContact = if (directPeerId != null) contacts.firstOrNull { it.userId == directPeerId } else null
                 val conv = conversations.firstOrNull { it.id == screen.conversationId }
-                    ?: Conversation(id = screen.conversationId, title = "Secure Chat", participantIds = emptyList())
+                    ?: matchedContact?.let {
+                        Conversation(
+                            id = screen.conversationId,
+                            title = it.displayName,
+                            participantIds = listOf(it.userId),
+                            avatarUrl = it.avatarUrl
+                        )
+                    }
+                    ?: Conversation(
+                        id = screen.conversationId,
+                        title = "Secure Chat",
+                        participantIds = if (directPeerId != null) listOf(directPeerId) else emptyList()
+                    )
                 val msgs = messagesMap[screen.conversationId] ?: emptyList()
-                val recipientId = conv.participantIds.firstOrNull() ?: "peer_1"
+                val recipientId = conv.participantIds.firstOrNull() ?: directPeerId ?: "peer_1"
 
                 ChatScreen(
                     conversation = conv,
@@ -288,15 +319,19 @@ fun ArgusNavGraph(
                     onBackClick = { currentScreen = Screen.Main },
                     onSendMessage = { text, mediaUri, mediaType, size ->
                         coroutineScope.launch {
-                            container.messageRepository.sendMessage(
-                                conversationId = conv.id,
-                                recipientId = recipientId,
-                                text = text,
-                                mediaUri = mediaUri,
-                                mediaType = mediaType,
-                                mediaSizeBytes = size,
-                                disappearingDurationSec = conv.disappearingDurationSec
-                            )
+                            try {
+                                container.messageRepository.sendMessage(
+                                    conversationId = conv.id,
+                                    recipientId = recipientId,
+                                    text = text,
+                                    mediaUri = mediaUri,
+                                    mediaType = mediaType,
+                                    mediaSizeBytes = size,
+                                    disappearingDurationSec = conv.disappearingDurationSec
+                                )
+                            } catch (e: Exception) {
+                                android.util.Log.e("ArgusNavGraph", "onSendMessage error", e)
+                            }
                         }
                     },
                     onVoiceCallClick = {

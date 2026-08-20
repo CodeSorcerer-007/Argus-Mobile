@@ -150,5 +150,50 @@ export function createKeysRouter(db: ArgusDatabase): Router {
     });
   });
 
+  /**
+   * Fetch PreKey bundles for multiple users in a single batch request (e.g. for Group E2EE sessions)
+   */
+  router.post('/bundles', (req: Request, res: Response): void => {
+    const { userIds } = req.body;
+    if (!Array.isArray(userIds) || userIds.length === 0) {
+      res.status(400).json({ error: 'userIds array is required and cannot be empty' });
+      return;
+    }
+
+    const maxBatchSize = 50;
+    const requestedIds = userIds.slice(0, maxBatchSize);
+    const bundles: Record<string, any> = {};
+
+    for (const targetUserId of requestedIds) {
+      const targetUser = db.users.get(targetUserId);
+      if (!targetUser) continue;
+
+      let foundBundle: StoredPreKeyBundle | undefined;
+      for (const bundle of db.keyBundles.values()) {
+        if (bundle.userId === targetUserId) {
+          foundBundle = bundle;
+          break;
+        }
+      }
+
+      if (foundBundle) {
+        const otpk = db.popOneTimePreKey(foundBundle.userId, foundBundle.deviceId);
+        bundles[targetUserId] = {
+          userId: foundBundle.userId,
+          deviceId: foundBundle.deviceId,
+          identityPublicKeyBase64: foundBundle.identityPublicKeyBase64,
+          signedPreKeyId: foundBundle.signedPreKeyId,
+          signedPreKeyPublicBase64: foundBundle.signedPreKeyPublicBase64,
+          signedPreKeySignatureBase64: foundBundle.signedPreKeySignatureBase64,
+          oneTimePreKeyId: otpk ? otpk.keyId : null,
+          oneTimePreKeyPublicBase64: otpk ? otpk.publicKeyBase64 : null,
+          remainingOneTimeKeys: foundBundle.oneTimePreKeys.length
+        };
+      }
+    }
+
+    res.json({ success: true, bundles });
+  });
+
   return router;
 }

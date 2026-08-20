@@ -128,16 +128,17 @@ Argus Ecosystem
 │   │   │   ├── remote/                 # ArgusApiClient, WebRTC Client, FCM push handler
 │   │   │   └── repository/             # Auth, Message, Call, Vault, Shield & AI Repositories
 │   │   ├── theme/                      # Obsidian Black & Emerald Green Material 3 Design System
-│   │   └── ui/                         # 12 Modular Jetpack Compose Feature Packages
-│   │       ├── auth/                   # Phone number input, OTP auto-fill & keyboard actions
-│   │       ├── main/                   # Bottom navigation host (Chats, Status, Calls, Contacts)
-│   │       ├── chat/                   # WhatsApp-style chat bubbles, voice waveform player, reactions
+│   │   └── ui/                         # 13 Modular Jetpack Compose Feature Packages
+│   │       ├── auth/                   # Username/password authentication, emergency recovery key & biometric login
+│   │       ├── main/                   # Bottom navigation host (Chats, Status, Calls, Vault, Shield, AI)
+│   │       ├── chat/                   # WhatsApp-style chat bubbles, voice waveform player, reactions, file attachments
 │   │       ├── security/               # 60-digit Safety Numbers & QR Code scanner/renderer
 │   │       ├── call/                   # WebRTC 1-to-1 & Group Audio/Video calling screens
 │   │       ├── vault/                  # Biometric-gated encrypted note & file storage UI
-│   │       ├── shield/                 # Privacy Score dashboard, audit & panic wipe
+│   │       ├── shield/                 # Privacy Score dashboard, live permission audit & panic wipe
 │   │       ├── ai/                     # On-device translator, summarizer & smart tone rewriter
 │   │       ├── status/                 # 24-hour ephemeral rich status stories & viewer
+│   │       ├── components/             # Reusable UI components & permission rationale dialogs
 │   │       └── settings/               # Privacy controls, App lock, data saver & device management
 │   └── app/build/outputs/apk/debug/    # Compiled Android Debug APK (Argus-debug.apk)
 │
@@ -148,7 +149,7 @@ Argus Ecosystem
     │   ├── db/                         # Schema v2 Zero-Knowledge atomic database with automated migrations
     │   └── server.ts                   # Master server entrypoint & graceful shutdown lifecycle
     ├── dist/                           # Compiled production JavaScript bundle
-    └── tests/                          # Automated Jest integration test suite (28/28 Passing)
+    └── tests/                          # Automated Jest integration test suite (41/41 Passing)
 ```
 
 ---
@@ -250,15 +251,31 @@ cd ../android
 | Method | Endpoint | Auth | Description |
 |---|---|:---:|---|
 | `GET` | `/health` | No | System health diagnostics, uptime & schema version |
-| `POST` | `/api/auth/request-otp` | No | Request cellular SMS 6-digit OTP verification code |
-| `POST` | `/api/auth/verify-otp` | No | Verify OTP, establish identity key & obtain JWT pair |
+| `GET` | `/api/auth/check-username/:username` | No | Check handle availability before registration |
+| `POST` | `/api/auth/register` | No | Register username, password & receive 256-bit emergency recovery key |
+| `POST` | `/api/auth/login` | No | Authenticate user with rate-limiting brute-force lockouts |
+| `POST` | `/api/auth/verify-recovery-key` | No | Validate emergency recovery key for account recovery |
+| `POST` | `/api/auth/reset-password` | No | Sovereign password reset using 256-bit emergency recovery key |
 | `POST` | `/api/auth/refresh-token` | No | **Sliding-Window RTR**: Rotate access token & refresh token |
 | `POST` | `/api/auth/logout` | No | Revoke refresh token & terminate sessions |
 | `POST` | `/api/keys/publish-bundle` | Yes | Publish device X3DH pre-key bundle |
 | `GET` | `/api/keys/status` | Yes | Inspect pre-key pool health & replenishment alerts |
 | `POST` | `/api/keys/replenish` | Yes | Batch-upload additional one-time prekeys |
 | `GET` | `/api/keys/bundle/:userId` | Yes | Consume 1 OTP key and fetch recipient pre-key bundle |
-| `POST` | `/api/users/discover-contacts` | Yes | Salted SHA-256 private contact matching |
+| `POST` | `/api/keys/bundles` | Yes | Batch-fetch recipient pre-key bundles |
+| `GET` | `/api/users/me` | Yes | Fetch authenticated user profile |
+| `PUT` | `/api/users/me` | Yes | Update profile name, bio & avatar |
+| `DELETE` | `/api/users/me` | Yes | Permanently delete user account & purge tokens (GDPR/Play Store compliance) |
+| `GET` | `/api/users/search` | Yes | Search users by username handle |
+| `POST` | `/api/users/push-token` | Yes | Register Firebase Cloud Messaging (FCM) push token |
+| `GET` | `/api/users/:userId` | Yes | Fetch public user profile |
+| `POST` | `/api/groups/create` | Yes | Create end-to-end encrypted group chat |
+| `GET` | `/api/groups/:groupId` | Yes | Get group information & member list |
+| `PUT` | `/api/groups/:groupId` | Yes | Update group name, avatar & topic (Admin only) |
+| `POST` | `/api/groups/:groupId/add-members` | Yes | Add members to group (Admin only) |
+| `POST` | `/api/groups/:groupId/remove-member` | Yes | Remove member from group (Admin only) |
+| `POST` | `/api/groups/:groupId/leave` | Yes | Leave group chat |
+| `DELETE` | `/api/groups/:groupId` | Yes | Delete group chat (Admin only) |
 | `POST` | `/api/media/upload` | Yes | Upload encrypted media binary blob |
 | `GET` | `/api/media/download/:file` | No | Download media with chunked HTTP 206 range streaming |
 | `GET` | `/api/calls/ice-servers` | Yes | Fetch STUN/TURN ICE server credentials |

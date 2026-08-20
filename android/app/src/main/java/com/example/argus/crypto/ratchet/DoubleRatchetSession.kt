@@ -326,6 +326,15 @@ class DoubleRatchetSession(
             val (nextChain, skippedMessageKey) = HkdfEngine.kdfChainKey(chain)
             chain = nextChain
             val keyId = "$remoteDh:$sequenceNumberReceiving"
+
+            // Evict oldest skipped keys if exceeding max memory capacity
+            if (skippedMessageKeys.size >= 1000) {
+                val oldestKey = skippedMessageKeys.keys.firstOrNull()
+                if (oldestKey != null) {
+                    skippedMessageKeys.remove(oldestKey)
+                }
+            }
+
             skippedMessageKeys[keyId] = skippedMessageKey
             sequenceNumberReceiving++
         }

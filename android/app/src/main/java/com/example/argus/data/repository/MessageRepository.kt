@@ -205,8 +205,9 @@ class MessageRepository(
     }
 
     fun markAsRead(conversationId: String, senderId: String) {
+        val currentUserId = preferences.loadCurrentUser()?.id ?: "me"
         val msgs = localStore.loadMessagesForConversation(conversationId)
-        msgs.filter { it.recipientId == "me" && it.status != MessageStatus.READ }.forEach {
+        msgs.filter { (it.recipientId == currentUserId || it.recipientId == "me") && it.status != MessageStatus.READ }.forEach {
             localStore.updateMessageStatus(it.id, MessageStatus.READ)
             webSocketClient.sendReadAck(it.id, senderId)
         }

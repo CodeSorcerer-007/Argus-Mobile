@@ -211,39 +211,51 @@ class AuthRepository(
     }
 
     suspend fun startConversationWithUser(user: User): String {
-        val contact = com.example.argus.data.model.Contact(
-            id = "contact_${user.id}",
-            userId = user.id,
-            displayName = user.displayName,
-            phoneNumber = user.phoneNumber,
-            username = user.username,
-            avatarUrl = user.avatarUrl,
-            identityKeyBase64 = user.identityKeyBase64,
-            isVerified = false,
-            safetyNumber = null,
-            isOnline = user.isOnline,
-            lastSeen = user.lastSeen
-        )
-        localStore.upsertContact(contact)
+        val safeDisplayName = when {
+            user.displayName.isNotBlank() -> user.displayName
+            user.username.isNotBlank() -> "@${user.username}"
+            !user.phoneNumber.isNullOrBlank() -> user.phoneNumber
+            else -> "User ${user.id.takeLast(4)}"
+        }
 
         try {
-            apiClient.fetchTargetPreKeyBundle(user.id)
-        } catch (e: Exception) {
-            // Lazily initializes on first message send
-        }
-
-        val convId = "conv_${user.id}"
-        val existing = localStore.loadConversations().firstOrNull { it.id == convId }
-        if (existing == null) {
-            val conv = com.example.argus.data.model.Conversation(
-                id = convId,
-                title = user.displayName,
-                participantIds = listOf(user.id),
-                avatarUrl = user.avatarUrl
+            val contact = com.example.argus.data.model.Contact(
+                id = "contact_${user.id}",
+                userId = user.id,
+                displayName = safeDisplayName,
+                phoneNumber = user.phoneNumber ?: "",
+                username = user.username.ifBlank { null },
+                avatarUrl = user.avatarUrl,
+                identityKeyBase64 = user.identityKeyBase64,
+                isVerified = false,
+                safetyNumber = null,
+                isOnline = user.isOnline,
+                lastSeen = user.lastSeen
             )
-            localStore.upsertConversation(conv)
+            localStore.upsertContact(contact)
+
+            try {
+                apiClient.fetchTargetPreKeyBundle(user.id)
+            } catch (e: Exception) {
+                // Lazily initializes on first message send
+            }
+
+            val convId = "conv_${user.id}"
+            val existing = localStore.loadConversations().firstOrNull { it.id == convId }
+            if (existing == null) {
+                val conv = com.example.argus.data.model.Conversation(
+                    id = convId,
+                    title = safeDisplayName,
+                    participantIds = listOf(user.id),
+                    avatarUrl = user.avatarUrl
+                )
+                localStore.upsertConversation(conv)
+            }
+            return convId
+        } catch (e: Exception) {
+            android.util.Log.e("AuthRepository", "startConversationWithUser error", e)
+            return "conv_${user.id}"
         }
-        return convId
     }
 
     suspend fun updateProfile(displayName: String?, username: String?, about: String? = null): Result<User> {

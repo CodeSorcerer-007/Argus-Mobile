@@ -3,7 +3,10 @@ package com.example.argus.ui.vault
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -24,11 +27,16 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.argus.core.permission.ArgusPermissionType
+import com.example.argus.core.permission.PermissionManager
 import com.example.argus.data.model.VaultItem
 import com.example.argus.data.model.VaultItemType
 import com.example.argus.data.repository.VaultRepository
 import com.example.argus.theme.*
+import com.example.argus.ui.components.ArgusPermissionRationaleDialog
 import com.example.argus.ui.components.ArgusTopBar
+import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -39,10 +47,12 @@ fun ArgusVaultScreen(
     onBackClick: () -> Unit
 ) {
     val items by vaultRepository.vaultItems.collectAsState()
+    var showAddMenu by remember { mutableStateOf(false) }
     var showNewNoteDialog by remember { mutableStateOf(false) }
     var selectedNoteToRead by remember { mutableStateOf<Pair<VaultItem, String>?>(null) }
     var searchQuery by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf<VaultItemType?>(null) }
+    var activeRationalePermission by remember { mutableStateOf<ArgusPermissionType?>(null) }
     val context = LocalContext.current
 
     val filteredItems = remember(items, searchQuery, selectedCategory) {
@@ -53,6 +63,98 @@ fun ArgusVaultScreen(
         }
     }
 
+    // Storage Picker for Documents/Files
+    val documentPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val inputStream = context.contentResolver.openInputStream(uri)
+                if (inputStream != null) {
+                    val tempFile = File(context.cacheDir, "vault_staging_${System.currentTimeMillis()}.bin")
+                    FileOutputStream(tempFile).use { out ->
+                        inputStream.copyTo(out)
+                    }
+                    inputStream.close()
+                    val displayName = uri.lastPathSegment?.substringAfterLast('/') ?: "Encrypted_Document"
+                    vaultRepository.importAndEncryptFile(tempFile, displayName, VaultItemType.FILE, "application/octet-stream")
+                    tempFile.delete()
+                    Toast.makeText(context, "File encrypted with hardware key!", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(context, "Encryption error: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // Gallery Picker for Photos
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val inputStream = context.contentResolver.openInputStream(uri)
+                if (inputStream != null) {
+                    val tempFile = File(context.cacheDir, "vault_staging_${System.currentTimeMillis()}.jpg")
+                    FileOutputStream(tempFile).use { out ->
+                        inputStream.copyTo(out)
+                    }
+                    inputStream.close()
+                    val displayName = "Photo_${SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())}"
+                    vaultRepository.importAndEncryptFile(tempFile, displayName, VaultItemType.PHOTO, "image/jpeg")
+                    tempFile.delete()
+                    Toast.makeText(context, "Photo encrypted with hardware key!", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(context, "Photo import error: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // Media Permission Launcher for Vault
+    val mediaPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val granted = grants.values.any { it }
+        if (granted || PermissionManager.hasStorageOrMediaPermissions(context)) {
+            photoPickerLauncher.launch("image/*")
+        } else {
+            activeRationalePermission = ArgusPermissionType.STORAGE_AND_MEDIA
+        }
+    }
+
+    fun launchVaultPhotoImport() {
+        if (PermissionManager.hasStorageOrMediaPermissions(context)) {
+            photoPickerLauncher.launch("image/*")
+        } else {
+            mediaPermissionLauncher.launch(PermissionManager.getStorageAndMediaPermissions())
+        }
+    }
+
+    fun launchVaultDocumentImport() {
+        if (PermissionManager.hasStorageOrMediaPermissions(context)) {
+            documentPickerLauncher.launch("*/*")
+        } else {
+            mediaPermissionLauncher.launch(PermissionManager.getStorageAndMediaPermissions())
+        }
+    }
+
+    // Active Permission Rationale Dialog
+    if (activeRationalePermission != null) {
+        ArgusPermissionRationaleDialog(
+            permissionType = activeRationalePermission!!,
+            onGrantClick = {
+                activeRationalePermission = null
+                mediaPermissionLauncher.launch(PermissionManager.getStorageAndMediaPermissions())
+            },
+            onDismiss = { activeRationalePermission = null },
+            onOpenSettingsClick = {
+                activeRationalePermission = null
+                PermissionManager.openAppSettings(context)
+            }
+        )
+    }
+
     Scaffold(
         containerColor = ObsidianBlack,
         topBar = {
@@ -61,8 +163,40 @@ fun ArgusVaultScreen(
                 subtitle = "Hardware-backed AES-256 GCM Storage",
                 onBackClick = onBackClick,
                 actions = {
-                    IconButton(onClick = { showNewNoteDialog = true }) {
-                        Icon(imageVector = Icons.Default.Add, contentDescription = "Add Item", tint = EmeraldPrimary)
+                    Box {
+                        IconButton(onClick = { showAddMenu = true }) {
+                            Icon(imageVector = Icons.Default.Add, contentDescription = "Add Item", tint = EmeraldPrimary)
+                        }
+                        DropdownMenu(
+                            expanded = showAddMenu,
+                            onDismissRequest = { showAddMenu = false },
+                            modifier = Modifier.background(ObsidianCard)
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("New Secret Note", color = TextPrimary) },
+                                leadingIcon = { Icon(Icons.Default.EditNote, contentDescription = null, tint = EmeraldPrimary) },
+                                onClick = {
+                                    showAddMenu = false
+                                    showNewNoteDialog = true
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Import & Encrypt Photo", color = TextPrimary) },
+                                leadingIcon = { Icon(Icons.Default.Image, contentDescription = null, tint = CyanAccent) },
+                                onClick = {
+                                    showAddMenu = false
+                                    launchVaultPhotoImport()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Import & Encrypt File", color = TextPrimary) },
+                                leadingIcon = { Icon(Icons.Default.FolderZip, contentDescription = null, tint = ShieldAmber) },
+                                onClick = {
+                                    showAddMenu = false
+                                    launchVaultDocumentImport()
+                                }
+                            )
+                        }
                     }
                 }
             )
@@ -193,12 +327,12 @@ fun ArgusVaultScreen(
                                     val decrypted = vaultRepository.decryptNote(item)
                                     selectedNoteToRead = item to decrypted
                                 } else {
-                                    Toast.makeText(context, "Encrypted item verified: ${item.title}", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "Hardware encrypted ${item.type.name}: ${item.title} (${item.fileSizeBytes / 1024} KB)", Toast.LENGTH_SHORT).show()
                                 }
                             },
                             onDelete = {
                                 vaultRepository.deleteItem(item.id)
-                                Toast.makeText(context, "Item destroyed securely", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "Item destroyed securely from hardware vault", Toast.LENGTH_SHORT).show()
                             }
                         )
                     }
@@ -210,18 +344,17 @@ fun ArgusVaultScreen(
     if (showNewNoteDialog) {
         var noteTitle by remember { mutableStateOf("") }
         var noteContent by remember { mutableStateOf("") }
-        var noteCategoryType by remember { mutableStateOf(VaultItemType.NOTE) }
 
         AlertDialog(
             onDismissRequest = { showNewNoteDialog = false },
             containerColor = ObsidianCard,
-            title = { Text("New Encrypted Secret Item", color = TextPrimary, fontWeight = FontWeight.Bold) },
+            title = { Text("New Encrypted Secret Note", color = TextPrimary, fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     OutlinedTextField(
                         value = noteTitle,
                         onValueChange = { noteTitle = it },
-                        label = { Text("Title (e.g. Master Seed / Note)") },
+                        label = { Text("Title (e.g. Master Seed / Private Note)") },
                         modifier = Modifier.fillMaxWidth(),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = EmeraldPrimary,
@@ -233,7 +366,7 @@ fun ArgusVaultScreen(
                     OutlinedTextField(
                         value = noteContent,
                         onValueChange = { noteContent = it },
-                        label = { Text("Secret Content (Passwords, Keys, Notes)") },
+                        label = { Text("Secret Content (Passwords, Seed Phrases, Keys)") },
                         modifier = Modifier.fillMaxWidth().height(120.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedBorderColor = EmeraldPrimary,

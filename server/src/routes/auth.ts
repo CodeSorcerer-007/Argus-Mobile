@@ -32,19 +32,25 @@ const loginSchema = z.object({
 const resetPasswordSchema = z.object({
   username: z.string().trim().min(3).max(30),
   newPassword: z.string().min(6, { message: 'New password must be at least 6 characters long' }).max(128),
-  recoveryKey: z.string().trim().optional(),
+  recoveryKey: z.string({ message: 'Emergency recovery key is required' }).trim().min(8, { message: 'Emergency recovery key is required' }),
   identityKeyBase64: z.string().trim().min(20).max(128).regex(/^[A-Za-z0-9+/=_-]+$/).optional(),
   deviceName: z.string().trim().max(100).optional(),
   platform: z.string().trim().max(50).optional()
 });
 
-export function createAuthRouter(db: ArgusDatabase, jwtSecret: string): Router {
+export function createAuthRouter(
+  db: ArgusDatabase,
+  jwtSecret: string,
+  options?: { sensitiveLimiter?: any; checkUsernameLimiter?: any }
+): Router {
   const router = Router();
+  const sensitiveLimiter = options?.sensitiveLimiter || ((_req: any, _res: any, next: any) => next());
+  const checkUsernameLimiter = options?.checkUsernameLimiter || ((_req: any, _res: any, next: any) => next());
 
   /**
-   * Check if a username is available in real-time
+   * Check if a username is available in real-time (Lightweight limiter)
    */
-  router.get('/check-username/:username', (req: Request, res: Response): void => {
+  router.get('/check-username/:username', checkUsernameLimiter, (req: Request, res: Response): void => {
     const raw = req.params.username;
     const username = (Array.isArray(raw) ? raw[0] : raw || '').trim();
     if (!username || !usernameRegex.test(username)) {
@@ -58,7 +64,7 @@ export function createAuthRouter(db: ArgusDatabase, jwtSecret: string): Router {
   /**
    * Register a new user with Username, Password, and Display Name
    */
-  router.post('/register', (req: Request, res: Response): void => {
+  router.post('/register', sensitiveLimiter, (req: Request, res: Response): void => {
     const parseResult = registerSchema.safeParse(req.body);
     if (!parseResult.success) {
       res.status(400).json({ error: parseResult.error.issues[0].message });
@@ -151,7 +157,7 @@ export function createAuthRouter(db: ArgusDatabase, jwtSecret: string): Router {
   /**
    * Log in with Username and Password
    */
-  router.post('/login', (req: Request, res: Response): void => {
+  router.post('/login', sensitiveLimiter, (req: Request, res: Response): void => {
     const parseResult = loginSchema.safeParse(req.body);
     if (!parseResult.success) {
       res.status(400).json({ error: parseResult.error.issues[0].message });
@@ -265,7 +271,7 @@ export function createAuthRouter(db: ArgusDatabase, jwtSecret: string): Router {
   /**
    * Verify Recovery Key before Resetting Password
    */
-  router.post('/verify-recovery-key', (req: Request, res: Response): void => {
+  router.post('/verify-recovery-key', sensitiveLimiter, (req: Request, res: Response): void => {
     const { username, recoveryKey } = req.body;
     if (!username || !recoveryKey) {
       res.status(400).json({ error: 'Username and Recovery Key are required' });
@@ -301,9 +307,9 @@ export function createAuthRouter(db: ArgusDatabase, jwtSecret: string): Router {
   });
 
   /**
-   * Reset Password with Username and Optional Recovery Key
+   * Reset Password with Username and Required Recovery Key
    */
-  router.post('/reset-password', (req: Request, res: Response): void => {
+  router.post('/reset-password', sensitiveLimiter, (req: Request, res: Response): void => {
     const parseResult = resetPasswordSchema.safeParse(req.body);
     if (!parseResult.success) {
       res.status(400).json({ error: parseResult.error.issues[0].message });
@@ -319,8 +325,8 @@ export function createAuthRouter(db: ArgusDatabase, jwtSecret: string): Router {
       return;
     }
 
-    // If recoveryKey is provided and user has a recovery key hash on file, verify it
-    if (recoveryKey && user.recoveryKeyHash && user.recoveryKeySalt) {
+    // Strict recovery key verification
+    if (user.recoveryKeyHash && user.recoveryKeySalt) {
       const computedHash = db.hashRecoveryKey(recoveryKey, user.recoveryKeySalt);
       const expectedBuffer = Buffer.from(user.recoveryKeyHash, 'hex');
       const actualBuffer = Buffer.from(computedHash, 'hex');
@@ -410,7 +416,7 @@ export function createAuthRouter(db: ArgusDatabase, jwtSecret: string): Router {
   /**
    * Refresh expired access token using refresh token (with Refresh Token Rotation)
    */
-  router.post('/refresh-token', (req: Request, res: Response): void => {
+  router.post('/refresh-token', sensitiveLimiter, (req: Request, res: Response): void => {
     const { refreshToken } = req.body;
     if (!refreshToken || typeof refreshToken !== 'string') {
       res.status(400).json({ error: 'refreshToken is required' });

@@ -37,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.argus.core.permission.ArgusPermissionType
 import com.example.argus.core.permission.PermissionManager
 import com.example.argus.data.model.Conversation
 import com.example.argus.data.model.Message
@@ -45,6 +46,7 @@ import com.example.argus.data.repository.AiAssistantRepository
 import com.example.argus.data.repository.SmartContextItem
 import com.example.argus.theme.*
 import com.example.argus.ui.components.ArgusAvatar
+import com.example.argus.ui.components.ArgusPermissionRationaleDialog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
@@ -77,6 +79,7 @@ fun ChatScreen(
     var showOptionsMenu by remember { mutableStateOf(false) }
     var showDisappearingDialog by remember { mutableStateOf(false) }
     var fullScreenPhotoUrl by remember { mutableStateOf<String?>(null) }
+    var activeRationalePermission by remember { mutableStateOf<ArgusPermissionType?>(null) }
 
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -84,7 +87,9 @@ fun ChatScreen(
 
     // Smart Back Button Handler (dismiss sheets/dialogs before exiting)
     BackHandler {
-        if (fullScreenPhotoUrl != null) {
+        if (activeRationalePermission != null) {
+            activeRationalePermission = null
+        } else if (fullScreenPhotoUrl != null) {
             fullScreenPhotoUrl = null
         } else if (showAttachmentMenu) {
             showAttachmentMenu = false
@@ -123,7 +128,7 @@ fun ChatScreen(
         if (isGranted) {
             cameraLauncher.launch(null)
         } else {
-            Toast.makeText(context, "Camera permission is required to capture photos", Toast.LENGTH_LONG).show()
+            activeRationalePermission = ArgusPermissionType.CAMERA
         }
     }
 
@@ -146,6 +151,26 @@ fun ChatScreen(
         }
     }
 
+    // Media & Storage Permission Launcher for Gallery
+    val mediaPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val granted = grants.values.any { it }
+        if (granted || PermissionManager.hasStorageOrMediaPermissions(context)) {
+            galleryLauncher.launch("image/*")
+        } else {
+            activeRationalePermission = ArgusPermissionType.STORAGE_AND_MEDIA
+        }
+    }
+
+    fun launchGalleryPicker() {
+        if (PermissionManager.hasStorageOrMediaPermissions(context)) {
+            galleryLauncher.launch("image/*")
+        } else {
+            mediaPermissionLauncher.launch(PermissionManager.getStorageAndMediaPermissions())
+        }
+    }
+
     // Native Document Picker
     val documentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -156,6 +181,84 @@ fun ChatScreen(
             Toast.makeText(context, "Encrypted document sent!", Toast.LENGTH_SHORT).show()
         }
     }
+
+    fun launchDocumentPicker() {
+        if (PermissionManager.hasStorageOrMediaPermissions(context)) {
+            documentLauncher.launch("*/*")
+        } else {
+            mediaPermissionLauncher.launch(PermissionManager.getStorageAndMediaPermissions())
+        }
+    }
+
+    // Audio Permission Launcher for Voice Notes
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            isRecordingVoice = true
+        } else {
+            activeRationalePermission = ArgusPermissionType.AUDIO
+        }
+    }
+
+    fun triggerVoiceRecord() {
+        if (PermissionManager.hasAudioPermission(context)) {
+            isRecordingVoice = true
+        } else {
+            audioPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    // Audio Call Permission Launcher
+    val voiceCallPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            onVoiceCallClick()
+        } else {
+            activeRationalePermission = ArgusPermissionType.AUDIO
+        }
+    }
+
+    fun triggerVoiceCall() {
+        if (PermissionManager.hasAudioPermission(context)) {
+            onVoiceCallClick()
+        } else {
+            voiceCallPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    // Video Call Permission Launcher
+    val videoCallPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val audioGranted = grants[android.Manifest.permission.RECORD_AUDIO] ?: PermissionManager.hasAudioPermission(context)
+        val cameraGranted = grants[android.Manifest.permission.CAMERA] ?: PermissionManager.hasCameraPermission(context)
+        if (audioGranted && cameraGranted) {
+            onVideoCallClick()
+        } else if (!audioGranted) {
+            activeRationalePermission = ArgusPermissionType.AUDIO
+        } else {
+            activeRationalePermission = ArgusPermissionType.CAMERA
+        }
+    }
+
+    fun triggerVideoCall() {
+        if (PermissionManager.hasAudioPermission(context) && PermissionManager.hasCameraPermission(context)) {
+            onVideoCallClick()
+        } else {
+            videoCallPermissionLauncher.launch(PermissionManager.getCallPermissions())
+        }
+    }
+
+    // Generic Notification & Contacts Permission Launchers
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { }
+
+    val contactsPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { }
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
@@ -171,6 +274,33 @@ fun ChatScreen(
                 recordingDurationSec++
             }
         }
+    }
+
+    // Active Permission Rationale Dialog
+    if (activeRationalePermission != null) {
+        ArgusPermissionRationaleDialog(
+            permissionType = activeRationalePermission!!,
+            onGrantClick = {
+                val perm = activeRationalePermission!!
+                activeRationalePermission = null
+                when (perm) {
+                    ArgusPermissionType.CAMERA -> cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+                    ArgusPermissionType.AUDIO -> audioPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+                    ArgusPermissionType.STORAGE_AND_MEDIA -> mediaPermissionLauncher.launch(PermissionManager.getStorageAndMediaPermissions())
+                    ArgusPermissionType.NOTIFICATIONS -> {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                            notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                        }
+                    }
+                    ArgusPermissionType.CONTACTS -> contactsPermissionLauncher.launch(android.Manifest.permission.READ_CONTACTS)
+                }
+            },
+            onDismiss = { activeRationalePermission = null },
+            onOpenSettingsClick = {
+                activeRationalePermission = null
+                PermissionManager.openAppSettings(context)
+            }
+        )
     }
 
     // Disappearing Messages Modal
@@ -242,10 +372,10 @@ fun ChatScreen(
                         }
                     }
 
-                    IconButton(onClick = onVideoCallClick) {
+                    IconButton(onClick = { triggerVideoCall() }) {
                         Icon(imageVector = Icons.Default.Videocam, contentDescription = "Video Call", tint = TextPrimary)
                     }
-                    IconButton(onClick = onVoiceCallClick) {
+                    IconButton(onClick = { triggerVoiceCall() }) {
                         Icon(imageVector = Icons.Default.Call, contentDescription = "Audio Call", tint = TextPrimary)
                     }
 
@@ -362,7 +492,7 @@ fun ChatScreen(
                         ) {
                             AttachmentGridItem(icon = Icons.Default.Description, label = "Document", color = Color(0xFF7F66FF)) {
                                 showAttachmentMenu = false
-                                documentLauncher.launch("*/*")
+                                launchDocumentPicker()
                             }
                             AttachmentGridItem(icon = Icons.Default.CameraAlt, label = "Camera", color = Color(0xFFFF2E93)) {
                                 showAttachmentMenu = false
@@ -370,7 +500,7 @@ fun ChatScreen(
                             }
                             AttachmentGridItem(icon = Icons.Default.Image, label = "Gallery", color = Color(0xFFC433FF)) {
                                 showAttachmentMenu = false
-                                galleryLauncher.launch("image/*")
+                                launchGalleryPicker()
                             }
                             AttachmentGridItem(icon = Icons.Default.Headphones, label = "Audio", color = Color(0xFFFF9800)) {
                                 showAttachmentMenu = false
@@ -538,7 +668,7 @@ fun ChatScreen(
                             }
                         } else {
                             IconButton(
-                                onClick = { isRecordingVoice = true },
+                                onClick = { triggerVoiceRecord() },
                                 modifier = Modifier
                                     .size(48.dp)
                                     .clip(CircleShape)

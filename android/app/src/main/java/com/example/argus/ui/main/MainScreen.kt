@@ -2,6 +2,8 @@ package com.example.argus.ui.main
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -35,6 +37,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.argus.R
+import com.example.argus.core.permission.ArgusPermissionType
+import com.example.argus.core.permission.PermissionManager
 import com.example.argus.data.model.CallRecord
 import com.example.argus.data.model.CallStatus
 import com.example.argus.data.model.CallType
@@ -44,6 +48,7 @@ import com.example.argus.data.model.User
 import com.example.argus.data.repository.AuthRepository
 import com.example.argus.theme.*
 import com.example.argus.ui.components.ArgusAvatar
+import com.example.argus.ui.components.ArgusPermissionRationaleDialog
 import com.example.argus.ui.components.ArgusPulseBadge
 import com.example.argus.ui.status.EphemeralStatusItem
 import com.example.argus.ui.status.StatusScreen
@@ -89,14 +94,78 @@ fun MainScreen(
     var isSearchExpanded by remember { mutableStateOf(false) }
     var showNewChatDialog by remember { mutableStateOf(false) }
     var showOverflowMenu by remember { mutableStateOf(false) }
+    var activeRationalePermission by remember { mutableStateOf<ArgusPermissionType?>(null) }
+    var pendingCallTarget by remember { mutableStateOf<Pair<Contact, CallType>?>(null) }
 
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
     val currentUser by authRepository.currentUser.collectAsState()
 
+    // Call permissions launcher
+    val callPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val pending = pendingCallTarget
+        if (pending != null) {
+            val audioOk = grants[android.Manifest.permission.RECORD_AUDIO] ?: PermissionManager.hasAudioPermission(context)
+            val cameraOk = grants[android.Manifest.permission.CAMERA] ?: PermissionManager.hasCameraPermission(context)
+            if (pending.second == CallType.VOICE && audioOk) {
+                onStartCallClick(pending.first, pending.second)
+            } else if (pending.second == CallType.VIDEO && audioOk && cameraOk) {
+                onStartCallClick(pending.first, pending.second)
+            } else if (!audioOk) {
+                activeRationalePermission = ArgusPermissionType.AUDIO
+            } else {
+                activeRationalePermission = ArgusPermissionType.CAMERA
+            }
+            pendingCallTarget = null
+        }
+    }
+
+    fun initiateCallWithPermissionCheck(contact: Contact, type: CallType) {
+        if (type == CallType.VOICE) {
+            if (PermissionManager.hasAudioPermission(context)) {
+                onStartCallClick(contact, type)
+            } else {
+                pendingCallTarget = contact to type
+                callPermissionLauncher.launch(arrayOf(android.Manifest.permission.RECORD_AUDIO))
+            }
+        } else {
+            if (PermissionManager.hasAudioPermission(context) && PermissionManager.hasCameraPermission(context)) {
+                onStartCallClick(contact, type)
+            } else {
+                pendingCallTarget = contact to type
+                callPermissionLauncher.launch(PermissionManager.getCallPermissions())
+            }
+        }
+    }
+
+    // Active Permission Rationale Dialog
+    if (activeRationalePermission != null) {
+        ArgusPermissionRationaleDialog(
+            permissionType = activeRationalePermission!!,
+            onGrantClick = {
+                val perm = activeRationalePermission!!
+                activeRationalePermission = null
+                when (perm) {
+                    ArgusPermissionType.AUDIO -> callPermissionLauncher.launch(arrayOf(android.Manifest.permission.RECORD_AUDIO))
+                    ArgusPermissionType.CAMERA -> callPermissionLauncher.launch(arrayOf(android.Manifest.permission.CAMERA))
+                    else -> callPermissionLauncher.launch(PermissionManager.getCallPermissions())
+                }
+            },
+            onDismiss = { activeRationalePermission = null },
+            onOpenSettingsClick = {
+                activeRationalePermission = null
+                PermissionManager.openAppSettings(context)
+            }
+        )
+    }
+
     // Smart Back Button Handler (WhatsApp / Telegram standard)
     BackHandler {
-        if (showNewChatDialog) {
+        if (activeRationalePermission != null) {
+            activeRationalePermission = null
+        } else if (showNewChatDialog) {
             showNewChatDialog = false
         } else if (isSearchExpanded) {
             isSearchExpanded = false
@@ -225,9 +294,14 @@ fun MainScreen(
                                         .background(ObsidianSurface)
                                         .clickable {
                                             coroutineScope.launch {
-                                                val convId = authRepository.startConversationWithUser(user)
-                                                showNewChatDialog = false
-                                                onConversationClick(convId)
+                                                try {
+                                                    val convId = authRepository.startConversationWithUser(user)
+                                                    showNewChatDialog = false
+                                                    onConversationClick(convId)
+                                                } catch (e: Exception) {
+                                                    showNewChatDialog = false
+                                                    onConversationClick("conv_${user.id}")
+                                                }
                                             }
                                         }
                                         .padding(12.dp),
@@ -249,6 +323,42 @@ fun MainScreen(
                                         tint = EmeraldPrimary,
                                         modifier = Modifier.size(20.dp)
                                     )
+                                }
+                            }
+                        }
+                    } else if (!isSearching && searchInput.isNotBlank()) {
+                        Surface(
+                            color = EmeraldPrimary.copy(alpha = 0.12f),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    coroutineScope.launch {
+                                        val rawId = searchInput.trim().removePrefix("@")
+                                        val directUser = User(
+                                            id = if (rawId.startsWith("user_") || rawId.startsWith("u_")) rawId else "u_$rawId",
+                                            username = rawId,
+                                            displayName = searchInput.trim()
+                                        )
+                                        try {
+                                            val convId = authRepository.startConversationWithUser(directUser)
+                                            showNewChatDialog = false
+                                            onConversationClick(convId)
+                                        } catch (e: Exception) {
+                                            showNewChatDialog = false
+                                            onConversationClick("conv_${directUser.id}")
+                                        }
+                                    }
+                                }
+                                .padding(12.dp)
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(imageVector = Icons.Default.ChatBubble, contentDescription = null, tint = EmeraldPrimary)
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(text = "Message \"$searchInput\" directly", color = TextPrimary, fontWeight = FontWeight.Bold)
+                                    Text(text = "Start E2EE Signal Double Ratchet session", color = EmeraldLight, style = MaterialTheme.typography.labelSmall)
                                 }
                             }
                         }
@@ -611,7 +721,7 @@ fun MainScreen(
                     CallsTabWhatsAppStyle(
                         calls = calls,
                         contacts = contacts,
-                        onStartCall = onStartCallClick
+                        onStartCall = { contact, type -> initiateCallWithPermissionCheck(contact, type) }
                     )
                 }
 

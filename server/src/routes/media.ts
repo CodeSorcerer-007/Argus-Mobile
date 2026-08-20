@@ -91,10 +91,23 @@ export function createMediaRouter(uploadDir: string = './uploads', authMiddlewar
       const parts = range.replace(/bytes=/, '').split('-');
       const start = parseInt(parts[0], 10);
       const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-      const chunksize = end - start + 1;
-      const file = fs.createReadStream(filePath, { start, end });
+
+      if (isNaN(start) || isNaN(end) || start < 0 || start > end || start >= fileSize) {
+        res.setHeader('Content-Range', `bytes */${fileSize}`);
+        res.status(416).json({ error: 'Requested range not satisfiable' });
+        return;
+      }
+
+      const safeEnd = Math.min(end, fileSize - 1);
+      const chunksize = safeEnd - start + 1;
+      const file = fs.createReadStream(filePath, { start, end: safeEnd });
+      file.on('error', () => {
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Error reading media stream' });
+        }
+      });
       const head = {
-        'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+        'Content-Range': `bytes ${start}-${safeEnd}/${fileSize}`,
         'Accept-Ranges': 'bytes',
         'Content-Length': chunksize,
         'Content-Type': 'application/octet-stream'
@@ -108,7 +121,13 @@ export function createMediaRouter(uploadDir: string = './uploads', authMiddlewar
         'Accept-Ranges': 'bytes'
       };
       res.writeHead(200, head);
-      fs.createReadStream(filePath).pipe(res);
+      const file = fs.createReadStream(filePath);
+      file.on('error', () => {
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Error reading media stream' });
+        }
+      });
+      file.pipe(res);
     }
   });
 
