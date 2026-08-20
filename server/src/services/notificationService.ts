@@ -2,7 +2,10 @@
  * Argus Push Notification Service
  * Dispatches encrypted wakeup payloads to mobile devices via FCM (Firebase Cloud Messaging)
  * when recipients are offline or app is killed in the background.
+ * Persists push tokens to database (BUG-12 fixed).
  */
+
+import { ArgusDatabase } from '../db/database';
 
 export interface PushPayload {
   type: 'NEW_MESSAGE' | 'INCOMING_CALL' | 'SECURITY_ALERT';
@@ -14,18 +17,38 @@ export interface PushPayload {
 }
 
 class NotificationService {
-  private pushTokens = new Map<string, string>(); // userId -> fcmToken
+  private db: ArgusDatabase | null = null;
+  private inMemoryPushTokens = new Map<string, string>(); // fallback if db is not yet attached
+
+  public setDatabase(db: ArgusDatabase): void {
+    this.db = db;
+    // Copy any tokens registered before DB was set
+    this.inMemoryPushTokens.forEach((token, userId) => {
+      this.db!.pushTokens.set(userId, token);
+    });
+    this.inMemoryPushTokens.clear();
+  }
 
   public registerToken(userId: string, token: string): void {
-    this.pushTokens.set(userId, token);
+    if (this.db) {
+      this.db.pushTokens.set(userId, token);
+      this.db.scheduleSave();
+    } else {
+      this.inMemoryPushTokens.set(userId, token);
+    }
   }
 
   public unregisterToken(userId: string): void {
-    this.pushTokens.delete(userId);
+    if (this.db) {
+      this.db.pushTokens.delete(userId);
+      this.db.scheduleSave();
+    } else {
+      this.inMemoryPushTokens.delete(userId);
+    }
   }
 
   public getToken(userId: string): string | undefined {
-    return this.pushTokens.get(userId);
+    return this.db ? this.db.pushTokens.get(userId) : this.inMemoryPushTokens.get(userId);
   }
 
   /**
@@ -33,7 +56,7 @@ class NotificationService {
    * If FCM is not configured, logs in sandbox mode gracefully without crashing.
    */
   public async sendWakeup(targetUserId: string, payload: PushPayload): Promise<boolean> {
-    const token = this.pushTokens.get(targetUserId);
+    const token = this.getToken(targetUserId);
     if (!token) {
       return false; // User has no registered push token
     }

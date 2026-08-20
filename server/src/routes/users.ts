@@ -2,11 +2,12 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { ArgusDatabase } from '../db/database';
 import { notificationService } from '../services/notificationService';
+import { usernameRegex } from './auth';
 
 const profileUpdateSchema = z.object({
   displayName: z.string().trim().min(1).max(60).optional(),
-  username: z.string().trim().regex(/^[a-zA-Z0-9_]{3,30}$/, {
-    message: 'Username must be 3-30 characters (letters, numbers, underscores only)'
+  username: z.string().trim().regex(usernameRegex, {
+    message: 'Username must be 3-30 characters (letters, numbers, dots, and underscores only)'
   }).optional().nullable(),
   about: z.string().trim().max(200).optional(),
   avatarUrl: z.string().trim().max(500).optional().nullable()
@@ -18,11 +19,28 @@ const contactDiscoverySchema = z.object({
   })
 });
 
+/**
+ * Sanitizes user object to strip internal hashes and secrets before sending to client (BUG-6 & BUG-7 fixed)
+ */
+function sanitizeUserProfile(user: any) {
+  return {
+    id: user.id,
+    username: user.username,
+    displayName: user.displayName,
+    avatarUrl: user.avatarUrl,
+    about: user.about,
+    identityKeyBase64: user.identityKeyBase64,
+    isOnline: user.isOnline,
+    lastSeen: user.lastSeen,
+    createdAt: user.createdAt
+  };
+}
+
 export function createUsersRouter(db: ArgusDatabase): Router {
   const router = Router();
 
   /**
-   * Get current user profile
+   * Get current user profile (Sanitized - no credential hashes leaked)
    */
   router.get('/me', (req: Request, res: Response): void => {
     const { userId } = (req as any).user;
@@ -31,7 +49,7 @@ export function createUsersRouter(db: ArgusDatabase): Router {
       res.status(404).json({ error: 'User not found' });
       return;
     }
-    res.json({ user });
+    res.json({ user: sanitizeUserProfile(user) });
   });
 
   /**
@@ -67,8 +85,8 @@ export function createUsersRouter(db: ArgusDatabase): Router {
     if (about !== undefined) user.about = about;
     if (avatarUrl !== undefined) user.avatarUrl = avatarUrl || undefined;
 
-    db.save();
-    res.json({ success: true, user });
+    db.scheduleSave();
+    res.json({ success: true, user: sanitizeUserProfile(user) });
   });
 
   /**
@@ -104,16 +122,7 @@ export function createUsersRouter(db: ArgusDatabase): Router {
         u.displayName.toLowerCase().includes(query) ||
         u.id.toLowerCase().includes(query)
       ) {
-        results.push({
-          id: u.id,
-          username: u.username,
-          displayName: u.displayName,
-          avatarUrl: u.avatarUrl,
-          about: u.about,
-          identityKeyBase64: u.identityKeyBase64,
-          isOnline: u.isOnline,
-          lastSeen: u.lastSeen
-        });
+        results.push(sanitizeUserProfile(u));
       }
       if (results.length >= 20) break; // Limit search result size
     }
@@ -138,15 +147,8 @@ export function createUsersRouter(db: ArgusDatabase): Router {
       const u = db.findUserByPhoneHash(hash);
       if (u) {
         matched.push({
-          id: u.id,
-          phoneHash: u.phoneHash,
-          username: u.username,
-          displayName: u.displayName,
-          avatarUrl: u.avatarUrl,
-          about: u.about,
-          identityKeyBase64: u.identityKeyBase64,
-          isOnline: u.isOnline,
-          lastSeen: u.lastSeen
+          ...sanitizeUserProfile(u),
+          phoneHash: u.phoneHash
         });
       }
     }
@@ -180,18 +182,7 @@ export function createUsersRouter(db: ArgusDatabase): Router {
       res.status(404).json({ error: 'User not found' });
       return;
     }
-    res.json({
-      user: {
-        id: user.id,
-        username: user.username,
-        displayName: user.displayName,
-        avatarUrl: user.avatarUrl,
-        about: user.about,
-        identityKeyBase64: user.identityKeyBase64,
-        isOnline: user.isOnline,
-        lastSeen: user.lastSeen
-      }
-    });
+    res.json({ user: sanitizeUserProfile(user) });
   });
 
   return router;

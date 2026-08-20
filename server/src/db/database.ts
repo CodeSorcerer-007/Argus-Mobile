@@ -20,6 +20,7 @@ export interface SchemaMetadata {
 
 export const CURRENT_SCHEMA_VERSION = 2;
 const MAX_OFFLINE_MESSAGES_PER_USER = 500;
+const REVOKED_TOKEN_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000; // 90 days retention matching refresh token lifetime
 
 export class ArgusDatabase {
   private dataDir: string;
@@ -43,11 +44,10 @@ export class ArgusDatabase {
   public keyBundles: Map<string, StoredPreKeyBundle> = new Map(); // key: `${userId}:${deviceId}`
   public offlineMessages: Map<string, EncryptedMessagePayload[]> = new Map(); // key: userId
   public groups: Map<string, Group> = new Map();
-  public otps: Map<string, { code: string; expiresAt: number; phoneHash: string }> = new Map();
   public activeCalls: Map<string, CallSession> = new Map();
   public refreshTokens: Map<string, RefreshTokenRecord> = new Map();
-  public revokedTokens: Set<string> = new Set();
-  public failedOtpAttempts: Map<string, { count: number; lockedUntil: number }> = new Map();
+  public revokedTokens: Map<string, number> = new Map(); // token -> revokedAt timestamp (BUG-2 fixed: bounded Map with TTL pruning)
+  public pushTokens: Map<string, string> = new Map(); // userId -> FCM device token (BUG-12 fixed: persisted across restarts)
   public failedPasswordAttempts: Map<string, { count: number; lockedUntil: number }> = new Map();
 
   // Fast O(1) in-memory secondary indices
@@ -77,9 +77,10 @@ export class ArgusDatabase {
     const pgUrl = databaseUrl || process.env.DATABASE_URL;
     if (pgUrl && !pgUrl.includes('placeholder')) {
       try {
+        const sslReject = process.env.PG_SSL_REJECT_UNAUTHORIZED !== 'false';
         this.pgPool = new Pool({
           connectionString: pgUrl,
-          ssl: { rejectUnauthorized: false },
+          ssl: { rejectUnauthorized: sslReject },
           max: 10,
           idleTimeoutMillis: 30000
         });
@@ -131,8 +132,14 @@ export class ArgusDatabase {
         tokensRes.rows.forEach(r => {
           if (r.key === 'refreshTokens' && r.data) {
             Object.entries(r.data).forEach(([k, v]) => this.refreshTokens.set(k, v as RefreshTokenRecord));
-          } else if (r.key === 'revokedTokens' && Array.isArray(r.data)) {
-            this.revokedTokens = new Set(r.data);
+          } else if (r.key === 'revokedTokens' && r.data) {
+            if (Array.isArray(r.data)) {
+              r.data.forEach((token: string) => this.revokedTokens.set(token, Date.now()));
+            } else if (typeof r.data === 'object') {
+              Object.entries(r.data).forEach(([k, v]) => this.revokedTokens.set(k, Number(v) || Date.now()));
+            }
+          } else if (r.key === 'pushTokens' && r.data) {
+            Object.entries(r.data).forEach(([k, v]) => this.pushTokens.set(k, String(v)));
           }
         });
 
@@ -160,6 +167,34 @@ export class ArgusDatabase {
       }
       if (user.username) {
         this.usernameIndex.set(user.username.toLowerCase().trim(), user.id);
+      }
+    }
+  }
+
+  /**
+   * Periodically prunes expired revoked tokens, expired refresh tokens, and old lockouts
+   */
+  public pruneExpiredRecords(): void {
+    const now = Date.now();
+
+    // 1. Prune revoked tokens older than 90 days
+    for (const [token, revokedAt] of this.revokedTokens.entries()) {
+      if (now - revokedAt > REVOKED_TOKEN_MAX_AGE_MS) {
+        this.revokedTokens.delete(token);
+      }
+    }
+
+    // 2. Prune expired refresh tokens
+    for (const [token, record] of this.refreshTokens.entries()) {
+      if (now > record.expiresAt) {
+        this.refreshTokens.delete(token);
+      }
+    }
+
+    // 3. Prune expired password lockout records older than 24h past lockout
+    for (const [username, record] of this.failedPasswordAttempts.entries()) {
+      if (now > record.lockedUntil && now - record.lockedUntil > 24 * 60 * 60 * 1000) {
+        this.failedPasswordAttempts.delete(username);
       }
     }
   }
@@ -236,8 +271,15 @@ export class ArgusDatabase {
         if (raw.refreshTokens) {
           Object.entries(raw.refreshTokens).forEach(([k, v]) => this.refreshTokens.set(k, v as RefreshTokenRecord));
         }
-        if (Array.isArray(raw.revokedTokens)) {
-          this.revokedTokens = new Set(raw.revokedTokens);
+        if (raw.revokedTokens) {
+          if (Array.isArray(raw.revokedTokens)) {
+            raw.revokedTokens.forEach((token: string) => this.revokedTokens.set(token, Date.now()));
+          } else if (typeof raw.revokedTokens === 'object') {
+            Object.entries(raw.revokedTokens).forEach(([k, v]) => this.revokedTokens.set(k, Number(v) || Date.now()));
+          }
+        }
+        if (raw.pushTokens) {
+          Object.entries(raw.pushTokens).forEach(([k, v]) => this.pushTokens.set(k, String(v)));
         }
       }
       this.rebuildIndices();
@@ -309,6 +351,7 @@ export class ArgusDatabase {
     try {
       if (!fs.existsSync(this.dataDir)) return;
       this.rebuildIndices();
+      this.pruneExpiredRecords();
       await this.safeAtomicWriteAsync(this.schemaFile, JSON.stringify(this.schemaMetadata, null, 2));
 
       const uObj: Record<string, User> = {};
@@ -333,9 +376,17 @@ export class ArgusDatabase {
 
       const rObj: Record<string, RefreshTokenRecord> = {};
       this.refreshTokens.forEach((v, k) => (rObj[k] = v));
+
+      const revObj: Record<string, number> = {};
+      this.revokedTokens.forEach((v, k) => (revObj[k] = v));
+
+      const pObj: Record<string, string> = {};
+      this.pushTokens.forEach((v, k) => (pObj[k] = v));
+
       const tokensPayload = {
         refreshTokens: rObj,
-        revokedTokens: Array.from(this.revokedTokens)
+        revokedTokens: revObj,
+        pushTokens: pObj
       };
       await this.safeAtomicWriteAsync(this.tokensFile, JSON.stringify(tokensPayload, null, 2));
 
@@ -380,7 +431,11 @@ export class ArgusDatabase {
             );
             await client.query(
               'INSERT INTO argus_tokens (key, data) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data',
-              ['revokedTokens', JSON.stringify(Array.from(this.revokedTokens))]
+              ['revokedTokens', JSON.stringify(revObj)]
+            );
+            await client.query(
+              'INSERT INTO argus_tokens (key, data) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET data = EXCLUDED.data',
+              ['pushTokens', JSON.stringify(pObj)]
             );
           } finally {
             client.release();
@@ -412,6 +467,7 @@ export class ArgusDatabase {
     }
     try {
       this.rebuildIndices();
+      this.pruneExpiredRecords();
       this.saveSchema();
 
       const uObj: Record<string, User> = {};
@@ -436,9 +492,17 @@ export class ArgusDatabase {
 
       const rObj: Record<string, RefreshTokenRecord> = {};
       this.refreshTokens.forEach((v, k) => (rObj[k] = v));
+
+      const revObj: Record<string, number> = {};
+      this.revokedTokens.forEach((v, k) => (revObj[k] = v));
+
+      const pObj: Record<string, string> = {};
+      this.pushTokens.forEach((v, k) => (pObj[k] = v));
+
       const tokensPayload = {
         refreshTokens: rObj,
-        revokedTokens: Array.from(this.revokedTokens)
+        revokedTokens: revObj,
+        pushTokens: pObj
       };
       this.safeAtomicWrite(this.tokensFile, JSON.stringify(tokensPayload, null, 2));
     } catch (e) {
@@ -456,22 +520,37 @@ export class ArgusDatabase {
   }
 
   public findUserByPhone(phoneNumber: string): User | undefined {
-    const hash = this.hashPhone(phoneNumber);
-    const userId = this.phoneHashIndex.get(hash);
-    if (userId) return this.users.get(userId);
-    return undefined;
+    return this.findUserByPhoneHash(this.hashPhone(phoneNumber));
   }
 
   public findUserByPhoneHash(hash: string): User | undefined {
     const userId = this.phoneHashIndex.get(hash);
-    if (userId) return this.users.get(userId);
+    if (userId) {
+      const user = this.users.get(userId);
+      if (user && user.phoneHash === hash) return user;
+    }
+    for (const u of this.users.values()) {
+      if (u.phoneHash === hash) {
+        this.phoneHashIndex.set(hash, u.id);
+        return u;
+      }
+    }
     return undefined;
   }
 
   public findUserByUsername(username: string): User | undefined {
     const clean = username.toLowerCase().trim();
     const userId = this.usernameIndex.get(clean);
-    if (userId) return this.users.get(userId);
+    if (userId) {
+      const user = this.users.get(userId);
+      if (user && user.username?.toLowerCase().trim() === clean) return user;
+    }
+    for (const u of this.users.values()) {
+      if (u.username?.toLowerCase().trim() === clean) {
+        this.usernameIndex.set(clean, u.id);
+        return u;
+      }
+    }
     return undefined;
   }
 
@@ -568,15 +647,19 @@ export class ArgusDatabase {
     // 4. Remove offline messages
     this.offlineMessages.delete(userId);
 
-    // 5. Remove refresh tokens
+    // 5. Remove refresh tokens and mark as revoked
+    const now = Date.now();
     for (const [token, rec] of Array.from(this.refreshTokens.entries())) {
       if (rec.userId === userId) {
         this.refreshTokens.delete(token);
-        this.revokedTokens.add(token);
+        this.revokedTokens.set(token, now);
       }
     }
 
-    // 6. Clean up groups
+    // 6. Clean up push token
+    this.pushTokens.delete(userId);
+
+    // 7. Clean up groups
     for (const [groupId, group] of Array.from(this.groups.entries())) {
       const memberIdx = group.members.indexOf(userId);
       if (memberIdx !== -1) {
@@ -596,7 +679,7 @@ export class ArgusDatabase {
       }
     }
 
-    // 7. Clear lockout records
+    // 8. Clear lockout records
     if (user.username) {
       this.failedPasswordAttempts.delete(user.username.toLowerCase().trim());
     }
@@ -618,11 +701,10 @@ export class ArgusDatabase {
     this.keyBundles.clear();
     this.offlineMessages.clear();
     this.groups.clear();
-    this.otps.clear();
     this.activeCalls.clear();
     this.refreshTokens.clear();
     this.revokedTokens.clear();
-    this.failedOtpAttempts.clear();
+    this.pushTokens.clear();
     this.failedPasswordAttempts.clear();
     this.phoneHashIndex.clear();
     this.usernameIndex.clear();
@@ -648,4 +730,3 @@ export class ArgusDatabase {
     }
   }
 }
-

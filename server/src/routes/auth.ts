@@ -6,7 +6,8 @@ import { z } from 'zod';
 import { ArgusDatabase } from '../db/database';
 import { User, Device } from '../types';
 
-const usernameRegex = /^[a-zA-Z0-9._]{3,30}$/;
+export const usernameRegex = /^[a-zA-Z0-9._]{3,30}$/;
+const MAX_DEVICES_PER_USER = 5;
 
 const registerSchema = z.object({
   username: z.string().trim().min(3).max(30).regex(usernameRegex, {
@@ -37,6 +38,52 @@ const resetPasswordSchema = z.object({
   deviceName: z.string().trim().max(100).optional(),
   platform: z.string().trim().max(50).optional()
 });
+
+/**
+ * Helper to manage user device sessions without unbounded memory proliferation (BUG-3 fixed)
+ */
+function getOrCreateUserDevice(db: ArgusDatabase, userId: string, deviceName?: string, platform?: string): Device {
+  const dName = (deviceName || 'Android Device').trim();
+  const pForm = (platform || 'android').trim();
+  const now = Date.now();
+
+  // Reuse existing active device if names and platform match
+  for (const dev of db.devices.values()) {
+    if (dev.userId === userId && dev.deviceName === dName && dev.platform === pForm) {
+      dev.lastActive = now;
+      return dev;
+    }
+  }
+
+  // Bound device count per user
+  const userDevices: Device[] = [];
+  for (const dev of db.devices.values()) {
+    if (dev.userId === userId) {
+      userDevices.push(dev);
+    }
+  }
+
+  if (userDevices.length >= MAX_DEVICES_PER_USER) {
+    userDevices.sort((a, b) => a.lastActive - b.lastActive);
+    const toRemove = userDevices.slice(0, userDevices.length - (MAX_DEVICES_PER_USER - 1));
+    for (const oldDev of toRemove) {
+      db.devices.delete(oldDev.id);
+      db.keyBundles.delete(`${userId}:${oldDev.id}`);
+    }
+  }
+
+  const deviceId = uuidv4();
+  const newDevice: Device = {
+    id: deviceId,
+    userId,
+    deviceName: dName,
+    platform: pForm,
+    createdAt: now,
+    lastActive: now
+  };
+  db.devices.set(deviceId, newDevice);
+  return newDevice;
+}
 
 export function createAuthRouter(
   db: ArgusDatabase,
@@ -105,16 +152,7 @@ export function createAuthRouter(
     };
     db.users.set(user.id, user);
 
-    const deviceId = uuidv4();
-    const device: Device = {
-      id: deviceId,
-      userId: user.id,
-      deviceName: deviceName || 'Android Device',
-      platform: platform || 'android',
-      createdAt: now,
-      lastActive: now
-    };
-    db.devices.set(deviceId, device);
+    const device = getOrCreateUserDevice(db, user.id, deviceName, platform);
 
     const token = jwt.sign(
       { userId: user.id, username: user.username, deviceId: device.id },
@@ -130,7 +168,7 @@ export function createAuthRouter(
       expiresAt: now + 90 * 24 * 60 * 60 * 1000
     });
 
-    db.save();
+    db.scheduleSave();
 
     console.log(`[Auth Service] Registered new user @${user.username} (${user.displayName})`);
 
@@ -220,16 +258,7 @@ export function createAuthRouter(
     user.lastSeen = now;
     user.isOnline = true;
 
-    const deviceId = uuidv4();
-    const device: Device = {
-      id: deviceId,
-      userId: user.id,
-      deviceName: deviceName || 'Android Device',
-      platform: platform || 'android',
-      createdAt: now,
-      lastActive: now
-    };
-    db.devices.set(deviceId, device);
+    const device = getOrCreateUserDevice(db, user.id, deviceName, platform);
 
     const token = jwt.sign(
       { userId: user.id, username: user.username, deviceId: device.id },
@@ -245,7 +274,7 @@ export function createAuthRouter(
       expiresAt: now + 90 * 24 * 60 * 60 * 1000
     });
 
-    db.save();
+    db.scheduleSave();
 
     console.log(`[Auth Service] User @${user.username} logged in successfully`);
 
@@ -285,9 +314,9 @@ export function createAuthRouter(
       return;
     }
 
+    // Strict recovery key verification (BUG-4 fixed: no bypass if recovery key hash is missing)
     if (!user.recoveryKeyHash || !user.recoveryKeySalt) {
-      // Legacy user without initial recovery key - allow setting new one
-      res.json({ valid: true, requiresNewKey: true });
+      res.status(403).json({ error: 'Emergency recovery is not configured for this account' });
       return;
     }
 
@@ -325,19 +354,22 @@ export function createAuthRouter(
       return;
     }
 
-    // Strict recovery key verification
-    if (user.recoveryKeyHash && user.recoveryKeySalt) {
-      const computedHash = db.hashRecoveryKey(recoveryKey, user.recoveryKeySalt);
-      const expectedBuffer = Buffer.from(user.recoveryKeyHash, 'hex');
-      const actualBuffer = Buffer.from(computedHash, 'hex');
+    // Strict recovery key verification (BUG-4 fixed: mandatory check)
+    if (!user.recoveryKeyHash || !user.recoveryKeySalt) {
+      res.status(403).json({ error: 'Emergency recovery is not configured for this account. Cannot reset password.' });
+      return;
+    }
 
-      const isKeyMatch = expectedBuffer.length === actualBuffer.length &&
-        crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+    const computedHash = db.hashRecoveryKey(recoveryKey, user.recoveryKeySalt);
+    const expectedBuffer = Buffer.from(user.recoveryKeyHash, 'hex');
+    const actualBuffer = Buffer.from(computedHash, 'hex');
 
-      if (!isKeyMatch) {
-        res.status(400).json({ error: 'Invalid recovery key. Please enter the valid emergency key.' });
-        return;
-      }
+    const isKeyMatch = expectedBuffer.length === actualBuffer.length &&
+      crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+
+    if (!isKeyMatch) {
+      res.status(400).json({ error: 'Invalid recovery key. Please enter the valid emergency key.' });
+      return;
     }
 
     // Generate new salt and hash for new password
@@ -363,16 +395,7 @@ export function createAuthRouter(
     // Reset failed brute-force lockout attempts
     db.failedPasswordAttempts.delete(cleanUsername);
 
-    const deviceId = uuidv4();
-    const device: Device = {
-      id: deviceId,
-      userId: user.id,
-      deviceName: deviceName || 'Android Device',
-      platform: platform || 'android',
-      createdAt: now,
-      lastActive: now
-    };
-    db.devices.set(deviceId, device);
+    const device = getOrCreateUserDevice(db, user.id, deviceName, platform);
 
     const token = jwt.sign(
       { userId: user.id, username: user.username, deviceId: device.id },
@@ -388,7 +411,7 @@ export function createAuthRouter(
       expiresAt: now + 90 * 24 * 60 * 60 * 1000
     });
 
-    db.save();
+    db.scheduleSave();
 
     console.log(`[Auth Service] Password reset completed for user @${user.username}`);
 
@@ -437,17 +460,22 @@ export function createAuthRouter(
 
     const user = db.users.get(record.userId);
     if (!user) {
-      res.status(404).json({ error: 'User not found' });
+      db.refreshTokens.delete(refreshToken);
+      db.revokedTokens.set(refreshToken, Date.now());
+      res.status(404).json({ error: 'User not found or account deleted' });
       return;
     }
 
-    // Refresh Token Rotation (RTR): Invalidate old refresh token to prevent replay attacks
+    // Refresh Token Rotation (RTR): Invalidate old refresh token to prevent replay attacks (BUG-2 & BUG-11 fixed)
     db.refreshTokens.delete(refreshToken);
-    db.revokedTokens.add(refreshToken);
+    db.revokedTokens.set(refreshToken, Date.now());
+
+    // Ensure device still exists or reuse record deviceId
+    const device = db.devices.get(record.deviceId) || getOrCreateUserDevice(db, user.id);
 
     // Issue new access token
     const newToken = jwt.sign(
-      { userId: user.id, username: user.username, deviceId: record.deviceId },
+      { userId: user.id, username: user.username, deviceId: device.id },
       jwtSecret,
       { expiresIn: '7d' }
     );
@@ -457,11 +485,11 @@ export function createAuthRouter(
     db.refreshTokens.set(newRefreshToken, {
       token: newRefreshToken,
       userId: user.id,
-      deviceId: record.deviceId,
+      deviceId: device.id,
       expiresAt: Date.now() + 90 * 24 * 60 * 60 * 1000
     });
 
-    db.save();
+    db.scheduleSave();
 
     res.json({
       success: true,
@@ -477,8 +505,8 @@ export function createAuthRouter(
     const { refreshToken } = req.body;
     if (refreshToken && typeof refreshToken === 'string') {
       db.refreshTokens.delete(refreshToken);
-      db.revokedTokens.add(refreshToken);
-      db.save();
+      db.revokedTokens.set(refreshToken, Date.now());
+      db.scheduleSave();
     }
     res.json({ success: true, message: 'Logged out successfully' });
   });

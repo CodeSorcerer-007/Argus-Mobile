@@ -316,7 +316,7 @@ cd ../android
 2. **Contact Discovery Privacy**: Phone numbers are hashed using a 256-bit salted SHA-256 digest (`Argus_Salt_2026:number`). Plaintext phone books are never uploaded.
 3. **Hardware Storage Isolation**: Root keys and vault secrets are wrapped using the Android Keystore backed by **StrongBox Keymaster / TEE**. Keys are unextractable from user space even on compromised devices.
 4. **Brute-Force & Replay Defenses**:
-   - 5 consecutive invalid OTP attempts trigger an automatic 15-minute lockout.
+   - 5 consecutive invalid password attempts trigger an automatic 15-minute lockout.
    - Refresh Token Rotation (RTR) revokes consumed tokens immediately, neutralizing replay attacks.
 5. **Path Traversal & Ingress Sanitization**: Media storage strictly uses UUID-based randomized filenames with path canonicalization checks to prevent directory traversal.
 

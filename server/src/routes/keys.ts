@@ -43,7 +43,7 @@ export function createKeysRouter(db: ArgusDatabase): Router {
       user.identityKeyBase64 = identityPublicKeyBase64;
     }
 
-    db.save();
+    db.scheduleSave();
     res.json({ success: true, message: 'PreKey bundle published successfully', availableOneTimeKeys: bundle.oneTimePreKeys.length });
   };
 
@@ -98,7 +98,7 @@ export function createKeysRouter(db: ArgusDatabase): Router {
     // Append new one-time prekeys to existing pool
     bundle.oneTimePreKeys.push(...oneTimePreKeys);
     bundle.updatedAt = Date.now();
-    db.save();
+    db.scheduleSave();
 
     res.json({
       success: true,

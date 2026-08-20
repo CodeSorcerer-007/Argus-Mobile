@@ -13,6 +13,7 @@ import { createGroupsRouter } from './routes/groups';
 import { createMediaRouter } from './routes/media';
 import { createCallsRouter } from './routes/calls';
 import { ArgusWebSocketManager } from './ws/wsManager';
+import { notificationService } from './services/notificationService';
 
 dotenv.config();
 
@@ -31,6 +32,7 @@ if (!process.env.JWT_SECRET || process.env.JWT_SECRET === DEFAULT_JWT_SECRET) {
 }
 
 export function createApp(db: ArgusDatabase, customJwtSecret?: string) {
+  notificationService.setDatabase(db);
   const app = express();
   const activeJwtSecret = customJwtSecret || JWT_SECRET;
 
@@ -60,10 +62,12 @@ export function createApp(db: ArgusDatabase, customJwtSecret?: string) {
 
   // 4. Rate Limiting Middleware
   const isTest = process.env.NODE_ENV === 'test';
+  const customWindowMs = parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10);
+  const customMaxRequests = parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '300', 10);
 
   const generalLimiter = rateLimit({
-    windowMs: 60 * 1000, // 1 minute
-    max: isTest ? 10000 : 300,
+    windowMs: customWindowMs,
+    max: isTest ? 10000 : customMaxRequests,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many requests, please slow down.' }
@@ -166,12 +170,6 @@ export async function startServer() {
   const wsManager = new ArgusWebSocketManager(server, db, JWT_SECRET);
 
   server.listen(PORT, '0.0.0.0', () => {
-    const smsStatus = process.env.FAST2SMS_API_KEY 
-      ? 'Fast2SMS Cellular Gateway (Active 🚀)' 
-      : process.env.TWILIO_ACCOUNT_SID 
-      ? 'Twilio SMS Gateway (Active 🚀)' 
-      : 'Local Developer Console';
-
     const dbMode = process.env.DATABASE_URL
       ? 'Cloud PostgreSQL / Neon.tech (Persistent 🚀)'
       : 'Local Zero-Knowledge JSON Store';
@@ -181,7 +179,6 @@ export async function startServer() {
     console.log(`  HTTP API:  http://0.0.0.0:${PORT}      `);
     console.log(`  WebSocket: ws://0.0.0.0:${PORT}/ws     `);
     console.log(`  Database:  ${dbMode}                   `);
-    console.log(`  SMS Mode:  ${smsStatus}                `);
     console.log(`  Health:    http://0.0.0.0:${PORT}/health`);
     console.log(`=========================================`);
   });

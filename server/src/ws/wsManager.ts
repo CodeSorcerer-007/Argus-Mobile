@@ -17,6 +17,8 @@ export class ArgusWebSocketManager {
   private jwtSecret: string;
   // userId -> Set<AuthenticatedSocket>
   private userSockets: Map<string, Set<AuthenticatedSocket>> = new Map();
+  // Bidirectional peer tracking for scoped privacy-preserving presence broadcasts (BUG-9 fixed)
+  private userDirectPeers: Map<string, Set<string>> = new Map();
 
   private heartbeatInterval: NodeJS.Timeout;
 
@@ -64,7 +66,16 @@ export class ArgusWebSocketManager {
       clearInterval(this.heartbeatInterval);
     }
     this.userSockets.clear();
+    this.userDirectPeers.clear();
     this.wss.close();
+  }
+
+  private addPeerRelation(userA: string, userB: string): void {
+    if (!userA || !userB || userA === userB) return;
+    if (!this.userDirectPeers.has(userA)) this.userDirectPeers.set(userA, new Set());
+    if (!this.userDirectPeers.has(userB)) this.userDirectPeers.set(userB, new Set());
+    this.userDirectPeers.get(userA)!.add(userB);
+    this.userDirectPeers.get(userB)!.add(userA);
   }
 
   private handleClientEvent(ws: AuthenticatedSocket, event: WsClientEvent): void {
@@ -133,12 +144,17 @@ export class ArgusWebSocketManager {
       }
 
       case 'ACK_READ': {
+        // BUG-5 fixed: Validate required fields before relaying status
+        if (!event.senderId || !event.messageId) break;
         this.relayStatusToSender(event.senderId, event.messageId, 'READ');
         break;
       }
 
       case 'TYPING_START':
       case 'TYPING_STOP': {
+        if (event.recipientId) {
+          this.addPeerRelation(ws.userId, event.recipientId);
+        }
         this.relayTyping(ws.userId, event.recipientId, event.conversationId, event.type === 'TYPING_START');
         break;
       }
@@ -147,6 +163,7 @@ export class ArgusWebSocketManager {
         const caller = this.db.users.get(ws.userId);
         const targetSockets = this.userSockets.get(event.targetUserId);
         const isTargetOnline = targetSockets && targetSockets.size > 0;
+        this.addPeerRelation(ws.userId, event.targetUserId);
 
         this.relayToUser(event.targetUserId, {
           type: 'INCOMING_CALL',
@@ -169,6 +186,7 @@ export class ArgusWebSocketManager {
       }
 
       case 'CALL_ANSWER': {
+        this.addPeerRelation(ws.userId, event.targetUserId);
         this.relayToUser(event.targetUserId, {
           type: 'CALL_ANSWERED',
           callId: event.callId,
@@ -203,6 +221,9 @@ export class ArgusWebSocketManager {
       return;
     }
     const senderUser = senderWs.userId ? this.db.users.get(senderWs.userId) : undefined;
+    if (senderWs.userId && payload.recipientId) {
+      this.addPeerRelation(senderWs.userId, payload.recipientId);
+    }
 
     // Check if recipient is a group
     const group = this.db.groups.get(payload.recipientId) || this.db.groups.get(payload.conversationId);
@@ -318,12 +339,37 @@ export class ArgusWebSocketManager {
     }
   }
 
+  /**
+   * Broadcast presence to relevant group peers and direct conversational contacts only (BUG-9 fixed)
+   */
   private broadcastPresence(userId: string, isOnline: boolean, lastSeen: number): void {
     const event: WsServerEvent = { type: 'PRESENCE', userId, isOnline, lastSeen };
-    this.wss.clients.forEach(ws => {
-      const sock = ws as AuthenticatedSocket;
-      if (sock.userId && sock.userId !== userId && sock.readyState === WebSocket.OPEN) {
-        this.send(sock, event);
+    const targetPeerIds = new Set<string>();
+
+    // 1. Group peers
+    for (const group of this.db.groups.values()) {
+      if (group.members.includes(userId)) {
+        group.members.forEach(mId => {
+          if (mId !== userId) targetPeerIds.add(mId);
+        });
+      }
+    }
+
+    // 2. Direct peers (people who have exchanged messages, calls, or typing)
+    const directPeers = this.userDirectPeers.get(userId);
+    if (directPeers) {
+      directPeers.forEach(pId => targetPeerIds.add(pId));
+    }
+
+    // Deliver presence event only to relevant authenticated active sockets
+    targetPeerIds.forEach(targetId => {
+      const sockets = this.userSockets.get(targetId);
+      if (sockets) {
+        sockets.forEach(sock => {
+          if (sock.readyState === WebSocket.OPEN) {
+            this.send(sock, event);
+          }
+        });
       }
     });
   }

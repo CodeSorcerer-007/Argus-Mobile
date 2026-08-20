@@ -26,7 +26,10 @@ export function createGroupsRouter(db: ArgusDatabase): Router {
       return;
     }
 
-    const members = Array.isArray(memberIds) ? Array.from(new Set([userId, ...memberIds])) : [userId];
+    const validMembers = (Array.isArray(memberIds) ? memberIds : [])
+      .filter((id: any) => typeof id === 'string' && db.users.has(id));
+    const members = Array.from(new Set([userId, ...validMembers]));
+
     const group: Group = {
       id: uuidv4(),
       title: title.trim(),
@@ -40,7 +43,7 @@ export function createGroupsRouter(db: ArgusDatabase): Router {
     };
 
     db.groups.set(group.id, group);
-    db.save();
+    db.scheduleSave();
 
     res.status(201).json({ success: true, group });
   });
@@ -128,12 +131,12 @@ export function createGroupsRouter(db: ArgusDatabase): Router {
       group.disappearingDurationSec = disappearingDurationSec === null ? undefined : disappearingDurationSec;
     }
 
-    db.save();
+    db.scheduleSave();
     res.json({ success: true, group });
   });
 
   /**
-   * Add members to group (Admin only)
+   * Add members to group (Admin only, verifies valid existing users - BUG-8 fixed)
    */
   router.post('/:groupId/add-members', (req: Request, res: Response): void => {
     const { userId } = (req as any).user;
@@ -156,13 +159,19 @@ export function createGroupsRouter(db: ArgusDatabase): Router {
       return;
     }
 
+    const initialCount = group.members.length;
     memberIds.forEach((id: string) => {
-      if (typeof id === 'string' && !group.members.includes(id)) {
+      if (typeof id === 'string' && db.users.has(id) && !group.members.includes(id)) {
         group.members.push(id);
       }
     });
 
-    db.save();
+    if (group.members.length === initialCount && memberIds.length > 0) {
+      res.status(400).json({ error: 'No valid new users found to add to group' });
+      return;
+    }
+
+    db.scheduleSave();
     res.json({ success: true, group });
   });
 
@@ -197,7 +206,7 @@ export function createGroupsRouter(db: ArgusDatabase): Router {
       group.admins.push(group.members[0]);
     }
 
-    db.save();
+    db.scheduleSave();
     res.json({ success: true, group });
   });
 
@@ -228,7 +237,7 @@ export function createGroupsRouter(db: ArgusDatabase): Router {
       group.admins.push(group.members[0]);
     }
 
-    db.save();
+    db.scheduleSave();
     res.json({ success: true, message: 'Left group successfully' });
   });
 
@@ -251,7 +260,7 @@ export function createGroupsRouter(db: ArgusDatabase): Router {
     }
 
     db.groups.delete(groupId);
-    db.save();
+    db.scheduleSave();
 
     res.json({ success: true, message: 'Group deleted successfully' });
   });
