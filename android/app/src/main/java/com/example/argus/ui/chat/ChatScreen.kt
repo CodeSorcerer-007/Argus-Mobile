@@ -1,7 +1,12 @@
 package com.example.argus.ui.chat
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
@@ -32,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.argus.core.permission.PermissionManager
 import com.example.argus.data.model.Conversation
 import com.example.argus.data.model.Message
 import com.example.argus.data.model.MessageStatus
@@ -41,6 +47,8 @@ import com.example.argus.theme.*
 import com.example.argus.ui.components.ArgusAvatar
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.io.File
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -73,6 +81,81 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+
+    // Smart Back Button Handler (dismiss sheets/dialogs before exiting)
+    BackHandler {
+        if (fullScreenPhotoUrl != null) {
+            fullScreenPhotoUrl = null
+        } else if (showAttachmentMenu) {
+            showAttachmentMenu = false
+        } else if (showDisappearingDialog) {
+            showDisappearingDialog = false
+        } else if (replyingToMessage != null) {
+            replyingToMessage = null
+        } else {
+            onBackClick()
+        }
+    }
+
+    // Native Camera Launcher
+    val cameraLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.TakePicturePreview()
+    ) { bitmap ->
+        if (bitmap != null) {
+            try {
+                val photoFile = File(context.cacheDir, "argus_cam_${System.currentTimeMillis()}.jpg")
+                FileOutputStream(photoFile).use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+                }
+                val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
+                onSendMessage("📷 Encrypted Photo", photoFile.absolutePath, "PHOTO", expiresAt)
+                Toast.makeText(context, "Encrypted photo captured and sent!", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(context, "Photo processing error: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // Camera Permission Launcher
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            cameraLauncher.launch(null)
+        } else {
+            Toast.makeText(context, "Camera permission is required to capture photos", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    fun launchCamera() {
+        if (PermissionManager.hasCameraPermission(context)) {
+            cameraLauncher.launch(null)
+        } else {
+            cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+        }
+    }
+
+    // Native Gallery Image Picker
+    val galleryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
+            onSendMessage("🖼️ Encrypted Image", uri.toString(), "PHOTO", expiresAt)
+            Toast.makeText(context, "Encrypted image sent!", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Native Document Picker
+    val documentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
+            onSendMessage("📄 Encrypted Document", uri.toString(), "DOCUMENT", expiresAt)
+            Toast.makeText(context, "Encrypted document sent!", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
@@ -279,23 +362,20 @@ fun ChatScreen(
                         ) {
                             AttachmentGridItem(icon = Icons.Default.Description, label = "Document", color = Color(0xFF7F66FF)) {
                                 showAttachmentMenu = false
-                                val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
-                                onSendMessage("📄 Encrypted Project Specs (PDF)", "DOCUMENT", "https://argus.sec/doc.pdf", expiresAt)
+                                documentLauncher.launch("*/*")
                             }
                             AttachmentGridItem(icon = Icons.Default.CameraAlt, label = "Camera", color = Color(0xFFFF2E93)) {
                                 showAttachmentMenu = false
-                                val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
-                                onSendMessage("📷 Hardware Camera Snapshot", "PHOTO", "https://argus.sec/cam_snapshot.jpg", expiresAt)
+                                launchCamera()
                             }
                             AttachmentGridItem(icon = Icons.Default.Image, label = "Gallery", color = Color(0xFFC433FF)) {
                                 showAttachmentMenu = false
-                                val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
-                                onSendMessage("🖼️ Encrypted Secret Photo", "PHOTO", "https://argus.sec/photo.jpg", expiresAt)
+                                galleryLauncher.launch("image/*")
                             }
                             AttachmentGridItem(icon = Icons.Default.Headphones, label = "Audio", color = Color(0xFFFF9800)) {
                                 showAttachmentMenu = false
                                 val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
-                                onSendMessage("🎵 Secure Audio Track (0:45)", "AUDIO", "https://argus.sec/audio.aac", expiresAt)
+                                onSendMessage("🎵 Secure Audio Note", "AUDIO", "https://argus.sec/audio.aac", expiresAt)
                             }
                         }
 
@@ -429,10 +509,7 @@ fun ChatScreen(
 
                                 if (inputText.isEmpty()) {
                                     IconButton(
-                                        onClick = {
-                                            val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
-                                            onSendMessage("📷 Encrypted Camera Photo", "PHOTO", "https://argus.sec/cam.jpg", expiresAt)
-                                        },
+                                        onClick = { launchCamera() },
                                         modifier = Modifier.size(32.dp)
                                     ) {
                                         Icon(imageVector = Icons.Default.CameraAlt, contentDescription = "Camera", tint = TextSecondary)

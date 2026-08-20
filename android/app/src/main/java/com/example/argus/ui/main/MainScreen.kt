@@ -1,6 +1,7 @@
 package com.example.argus.ui.main
 
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -92,6 +93,18 @@ fun MainScreen(
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
     val currentUser by authRepository.currentUser.collectAsState()
+
+    // Smart Back Button Handler (WhatsApp / Telegram standard)
+    BackHandler {
+        if (showNewChatDialog) {
+            showNewChatDialog = false
+        } else if (isSearchExpanded) {
+            isSearchExpanded = false
+            searchQuery = ""
+        } else if (selectedTab != MainTab.CHATS) {
+            selectedTab = MainTab.CHATS
+        }
+    }
 
     // New Chat & User Search Dialog
     if (showNewChatDialog) {
@@ -650,36 +663,6 @@ private fun StoriesHorizontalCarousel(
             }
             Spacer(modifier = Modifier.height(4.dp))
             Text(text = "My status", style = MaterialTheme.typography.labelSmall, color = TextPrimary, maxLines = 1)
-        }
-
-        // Contact Status Stories
-        listOf(
-            "Alex R." to true,
-            "Sarah C." to true,
-            "David K." to false
-        ).forEach { (name, isUnviewed) ->
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier
-                    .clickable { onStoryClick() }
-                    .width(64.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(52.dp)
-                        .clip(CircleShape)
-                        .border(
-                            width = 2.dp,
-                            brush = if (isUnviewed) Brush.linearGradient(listOf(EmeraldPrimary, CyanAccent)) else Brush.linearGradient(listOf(ObsidianBorder, ObsidianBorder)),
-                            shape = CircleShape
-                        )
-                        .padding(2.5.dp)
-                ) {
-                    ArgusAvatar(name = name, size = 47.dp)
-                }
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(text = name, style = MaterialTheme.typography.labelSmall, color = TextPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
         }
     }
 }

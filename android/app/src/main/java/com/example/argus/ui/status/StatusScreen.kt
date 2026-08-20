@@ -61,26 +61,7 @@ fun StatusScreen(
 
     var recentStatuses by remember {
         mutableStateOf(
-            listOf(
-                EphemeralStatusItem(
-                    id = "s1",
-                    userId = "u_alex",
-                    userName = "Alex Rivera",
-                    caption = "🔒 End-to-end encryption verified on the latest Argus build!",
-                    backgroundGradient = listOf(Color(0xFF0F2027), Color(0xFF203A43), Color(0xFF2C5364)),
-                    timestamp = System.currentTimeMillis() - 3600000,
-                    isViewed = false
-                ),
-                EphemeralStatusItem(
-                    id = "s2",
-                    userId = "u_sarah",
-                    userName = "Sarah Connor",
-                    caption = "Quantum resistance is not an option, it's a necessity. 🛡️",
-                    backgroundGradient = listOf(Color(0xFF1A1A2E), Color(0xFF16213E), Color(0xFF0F3460)),
-                    timestamp = System.currentTimeMillis() - 7200000,
-                    isViewed = false
-                )
-            )
+            listOf<EphemeralStatusItem>()
         )
     }
 
@@ -313,6 +294,40 @@ fun StatusScreen(
                         style = MaterialTheme.typography.labelSmall,
                         color = TextMuted
                     )
+                }
+            }
+        } else {
+            item {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 28.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CircleNotifications,
+                            contentDescription = null,
+                            tint = TextMuted,
+                            modifier = Modifier.size(40.dp)
+                        )
+                        Text(
+                            text = "No recent status updates",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = TextSecondary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Text(
+                            text = "Status updates from your encrypted contacts disappear after 24 hours.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextMuted,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 32.dp)
+                        )
+                    }
                 }
             }
         }

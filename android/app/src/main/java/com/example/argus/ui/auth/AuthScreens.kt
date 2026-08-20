@@ -1,5 +1,6 @@
 package com.example.argus.ui.auth
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -190,6 +191,7 @@ fun ArgusAuthScreen(
     onRegister: (username: String, password: String, displayName: String) -> Unit,
     onResetPassword: (username: String, newPassword: String, recoveryKey: String?) -> Unit,
     onCheckUsername: suspend (String) -> Boolean,
+    onBackClick: () -> Unit = {},
     isLoading: Boolean = false,
     errorMessage: String? = null
 ) {
@@ -197,6 +199,15 @@ fun ArgusAuthScreen(
     val keyboardController = LocalSoftwareKeyboardController.current
 
     var activeTab by remember { mutableStateOf(AuthTab.SIGN_IN) }
+
+    // Smart Back Handler for Auth Screen
+    BackHandler {
+        if (activeTab == AuthTab.FORGOT_PASSWORD || activeTab == AuthTab.SIGN_UP) {
+            activeTab = AuthTab.SIGN_IN
+        } else {
+            onBackClick()
+        }
+    }
 
     // Sign In form fields
     var loginUsername by remember { mutableStateOf("") }

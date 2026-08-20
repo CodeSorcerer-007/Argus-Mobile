@@ -1,19 +1,25 @@
 package com.example.argus.ui.navigation
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import com.example.argus.AppContainer
+import com.example.argus.core.biometric.BiometricPromptManager
+import com.example.argus.core.permission.PermissionManager
 import com.example.argus.data.model.CallType
 import com.example.argus.data.model.Contact
 import com.example.argus.data.model.Conversation
 import com.example.argus.data.model.User
 import com.example.argus.theme.ObsidianBlack
 import com.example.argus.ui.ai.AiAssistantScreen
+import com.example.argus.ui.auth.AppLockScreen
 import com.example.argus.ui.auth.ArgusAuthScreen
 import com.example.argus.ui.auth.WelcomeScreen
 import com.example.argus.ui.call.CallScreen
@@ -22,6 +28,7 @@ import com.example.argus.ui.chat.ContactInfoScreen
 import com.example.argus.ui.main.MainScreen
 import com.example.argus.ui.security.SecurityVerificationScreen
 import com.example.argus.ui.settings.SettingsScreen
+import com.example.argus.ui.splash.ArgusSplashScreen
 import com.example.argus.ui.status.EphemeralStatusItem
 import com.example.argus.ui.status.FullScreenStatusViewer
 import com.example.argus.ui.vault.ArgusVaultScreen
@@ -29,8 +36,10 @@ import com.example.argus.ui.shield.ArgusShieldScreen
 import kotlinx.coroutines.launch
 
 sealed class Screen {
+    object Splash : Screen()
     object Welcome : Screen()
     object Auth : Screen()
+    object AppLock : Screen()
     object Main : Screen()
     data class Chat(val conversationId: String) : Screen()
     data class ContactInfo(val contact: Contact) : Screen()
@@ -49,13 +58,27 @@ sealed class Screen {
 }
 
 @Composable
-fun ArgusNavGraph(container: AppContainer) {
-    val isLoggedIn = container.authRepository.isLoggedIn()
-    var currentScreen by remember {
-        mutableStateOf<Screen>(if (isLoggedIn) Screen.Main else Screen.Welcome)
-    }
+fun ArgusNavGraph(
+    container: AppContainer,
+    biometricManager: BiometricPromptManager? = null
+) {
+    val context = LocalContext.current
+    var currentScreen by remember { mutableStateOf<Screen>(Screen.Splash) }
+    var isAppUnlocked by remember { mutableStateOf(false) }
 
     val coroutineScope = rememberCoroutineScope()
+
+    // Automatic Permissions Prompt on Startup
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { }
+
+    LaunchedEffect(Unit) {
+        val permissions = PermissionManager.getRequiredPermissions()
+        if (!PermissionManager.hasPermissions(context, permissions)) {
+            permissionLauncher.launch(permissions)
+        }
+    }
 
     val conversations by container.messageRepository.conversations.collectAsState()
     val messagesMap by container.messageRepository.messages.collectAsState()
@@ -65,6 +88,32 @@ fun ArgusNavGraph(container: AppContainer) {
 
     Box(modifier = Modifier.fillMaxSize().background(ObsidianBlack)) {
         when (val screen = currentScreen) {
+            is Screen.Splash -> {
+                ArgusSplashScreen(
+                    onSplashFinished = {
+                        val isLoggedIn = container.authRepository.isLoggedIn()
+                        val isLockEnabled = container.preferences.isAppLockEnabled() || container.preferences.isBiometricEnabled()
+                        if (isLoggedIn && isLockEnabled && !isAppUnlocked) {
+                            currentScreen = Screen.AppLock
+                        } else if (isLoggedIn) {
+                            currentScreen = Screen.Main
+                        } else {
+                            currentScreen = Screen.Welcome
+                        }
+                    }
+                )
+            }
+
+            is Screen.AppLock -> {
+                AppLockScreen(
+                    biometricManager = biometricManager,
+                    onUnlocked = {
+                        isAppUnlocked = true
+                        currentScreen = Screen.Main
+                    }
+                )
+            }
+
             is Screen.Welcome -> {
                 WelcomeScreen(
                     onGetStartedClick = { currentScreen = Screen.Auth }
@@ -117,6 +166,9 @@ fun ArgusNavGraph(container: AppContainer) {
                     },
                     onCheckUsername = { username ->
                         container.authRepository.checkUsernameAvailability(username)
+                    },
+                    onBackClick = {
+                        currentScreen = Screen.Welcome
                     },
                     isLoading = isLoading,
                     errorMessage = errorMsg
