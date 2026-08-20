@@ -23,7 +23,7 @@ class MainActivity : FragmentActivity() {
             // Non-critical: Older OS fallback
         }
 
-        val appContainer = (application as ArgusApplication).container
+        val appContainer = (application as? ArgusApplication)?.container ?: ArgusApplication.instance.container
         try {
             biometricManager = BiometricPromptManager(this)
         } catch (e: Throwable) {

@@ -67,23 +67,28 @@ fun ArgusSplashScreen(
     )
 
     LaunchedEffect(Unit) {
-        logoAlpha.animateTo(1f, animationSpec = tween(400))
-        logoScale.animateTo(
-            1f,
-            animationSpec = spring(
-                dampingRatio = Spring.DampingRatioMediumBouncy,
-                stiffness = Spring.StiffnessLow
+        try {
+            logoAlpha.animateTo(1f, animationSpec = tween(400))
+            logoScale.animateTo(
+                1f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessLow
+                )
             )
-        )
-        glowAlpha.animateTo(0.9f, animationSpec = tween(500))
-        textAlpha.animateTo(1f, animationSpec = tween(400))
+            glowAlpha.animateTo(0.9f, animationSpec = tween(500))
+            textAlpha.animateTo(1f, animationSpec = tween(400))
 
-        delay(400)
-        step = 1
-        delay(400)
-        step = 2
-        delay(500)
-        onSplashFinished()
+            delay(400)
+            step = 1
+            delay(400)
+            step = 2
+            delay(500)
+        } catch (e: Throwable) {
+            // Safe fallback
+        } finally {
+            onSplashFinished()
+        }
     }
 
     Box(
