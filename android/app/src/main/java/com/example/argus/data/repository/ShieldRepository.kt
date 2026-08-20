@@ -33,8 +33,26 @@ class ShieldRepository(
     private val localStore: ArgusLocalStore
 ) {
     private var currentPermissionHealth = PermissionHealth()
-    private val _statusFlow = MutableStateFlow(computeStatus())
+    private val _statusFlow = MutableStateFlow(
+        ShieldSecurityStatus(
+            privacyScore = 90,
+            isE2EEActive = true,
+            isAppLockActive = false,
+            isBiometricActive = true,
+            isChatLockActive = false,
+            verifiedContactsCount = 0,
+            unverifiedContactsCount = 0,
+            isEmergencyPrivacyActive = false,
+            activeDevicesCount = 1,
+            permissions = PermissionHealth(),
+            issuesFound = emptyList()
+        )
+    )
     val statusFlow: StateFlow<ShieldSecurityStatus> = _statusFlow.asStateFlow()
+
+    init {
+        refresh()
+    }
 
     fun updatePermissionHealth(health: PermissionHealth) {
         currentPermissionHealth = health
@@ -42,16 +60,20 @@ class ShieldRepository(
     }
 
     fun refresh() {
-        _statusFlow.value = computeStatus()
+        try {
+            _statusFlow.value = computeStatus()
+        } catch (e: Throwable) {
+            android.util.Log.w("ShieldRepository", "Failed to compute status", e)
+        }
     }
 
     private fun computeStatus(): ShieldSecurityStatus {
-        val contacts = localStore.loadContacts()
+        val contacts = try { localStore.contactsFlow.value.ifEmpty { localStore.loadContacts() } } catch (e: Throwable) { emptyList() }
         val verifiedCount = contacts.count { it.isVerified }
         val unverifiedCount = contacts.count { !it.isVerified }
-        val isAppLock = preferences.isAppLockEnabled()
-        val isBiometric = preferences.isBiometricEnabled()
-        val isEmergency = preferences.isEmergencyPrivacyActive()
+        val isAppLock = try { preferences.isAppLockEnabled() } catch (e: Throwable) { false }
+        val isBiometric = try { preferences.isBiometricEnabled() } catch (e: Throwable) { true }
+        val isEmergency = try { preferences.isEmergencyPrivacyActive() } catch (e: Throwable) { false }
 
         val issues = mutableListOf<String>()
         var score = 100
@@ -65,12 +87,14 @@ class ShieldRepository(
             issues.add("$unverifiedCount contact(s) have unverified 60-digit Safety Numbers")
         }
 
+        val conversations = try { localStore.conversationsFlow.value.ifEmpty { localStore.loadConversations() } } catch (e: Throwable) { emptyList() }
+
         return ShieldSecurityStatus(
             privacyScore = score.coerceIn(0, 100),
             isE2EEActive = true,
             isAppLockActive = isAppLock,
             isBiometricActive = isBiometric,
-            isChatLockActive = localStore.loadConversations().any { it.isLocked },
+            isChatLockActive = conversations.any { it.isLocked },
             verifiedContactsCount = verifiedCount,
             unverifiedContactsCount = unverifiedCount,
             isEmergencyPrivacyActive = isEmergency,

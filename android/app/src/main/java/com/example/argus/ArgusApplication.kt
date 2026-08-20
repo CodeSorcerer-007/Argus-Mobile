@@ -55,6 +55,13 @@ class ArgusApplication : Application() {
         super.onCreate()
         instance = this
         try {
+            Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+                android.util.Log.e("ArgusCrashHandler", "FATAL EXCEPTION on thread ${thread.name}", throwable)
+            }
+        } catch (e: Throwable) {
+            // Ignore
+        }
+        try {
             val provider = org.bouncycastle.jce.provider.BouncyCastleProvider()
             java.security.Security.removeProvider(provider.name)
             java.security.Security.addProvider(provider)

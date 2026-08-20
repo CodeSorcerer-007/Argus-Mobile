@@ -95,13 +95,17 @@ fun ArgusNavGraph(
             is Screen.Splash -> {
                 ArgusSplashScreen(
                     onSplashFinished = {
-                        val isLoggedIn = container.authRepository.isLoggedIn()
-                        val isLockEnabled = container.preferences.isAppLockEnabled() || container.preferences.isBiometricEnabled()
-                        if (isLoggedIn && isLockEnabled && !isAppUnlocked) {
-                            currentScreen = Screen.AppLock
-                        } else if (isLoggedIn) {
-                            currentScreen = Screen.Main
-                        } else {
+                        try {
+                            val isLoggedIn = container.authRepository.isLoggedIn()
+                            val isLockEnabled = container.preferences.isAppLockEnabled() || container.preferences.isBiometricEnabled()
+                            if (isLoggedIn && isLockEnabled && !isAppUnlocked) {
+                                currentScreen = Screen.AppLock
+                            } else if (isLoggedIn) {
+                                currentScreen = Screen.Main
+                            } else {
+                                currentScreen = Screen.Welcome
+                            }
+                        } catch (e: Throwable) {
                             currentScreen = Screen.Welcome
                         }
                     }
