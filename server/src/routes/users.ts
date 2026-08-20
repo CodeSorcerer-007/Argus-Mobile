@@ -53,18 +53,14 @@ export function createUsersRouter(db: ArgusDatabase): Router {
       return;
     }
 
-    if (username !== undefined) {
-      if (username) {
-        const cleanUsername = username.toLowerCase();
-        const existing = db.findUserByUsername(cleanUsername);
-        if (existing && existing.id !== userId) {
-          res.status(409).json({ error: 'Username is already taken' });
-          return;
-        }
-        user.username = cleanUsername;
-      } else {
-        user.username = undefined;
+    if (username) {
+      const cleanUsername = username.toLowerCase().trim();
+      const existing = db.findUserByUsername(cleanUsername);
+      if (existing && existing.id !== userId) {
+        res.status(409).json({ error: 'Username is already taken' });
+        return;
       }
+      user.username = cleanUsername;
     }
 
     if (displayName) user.displayName = displayName;
@@ -124,7 +120,7 @@ export function createUsersRouter(db: ArgusDatabase): Router {
     const matched: any[] = [];
 
     for (const u of db.users.values()) {
-      if (hashSet.has(u.phoneHash)) {
+      if (u.phoneHash && hashSet.has(u.phoneHash)) {
         matched.push({
           id: u.id,
           phoneHash: u.phoneHash,

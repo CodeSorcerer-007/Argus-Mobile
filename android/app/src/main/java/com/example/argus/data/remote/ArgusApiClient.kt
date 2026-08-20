@@ -34,48 +34,25 @@ class ArgusApiClient(
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
-    suspend fun requestOtp(phoneNumber: String): OtpRequestResponse = withContext(Dispatchers.IO) {
-        try {
-            val payload = json.encodeToString(OtpRequestPayload(phoneNumber))
-            val request = Request.Builder()
-                .url("$baseUrl/api/auth/request-otp")
-                .post(payload.toRequestBody(jsonMediaType))
-                .build()
-
-            client.newCall(request).execute().use { response ->
-                val body = response.body?.string() ?: ""
-                if (body.isNotEmpty()) {
-                    json.decodeFromString<OtpRequestResponse>(body)
-                } else {
-                    OtpRequestResponse(success = false, error = "Empty server response (${response.code})")
-                }
-            }
-        } catch (e: Exception) {
-            android.util.Log.e("ArgusApiClient", "requestOtp failed: ${e.message}", e)
-            OtpRequestResponse(success = false, error = "Connection error: ${e.localizedMessage}")
-        }
-    }
-
-    suspend fun verifyOtp(
-        phoneNumber: String,
-        code: String,
-        deviceName: String,
+    suspend fun register(
+        username: String,
+        password: String,
+        displayName: String,
         identityKeyBase64: String,
-        displayName: String? = null
+        deviceName: String = "Android Device"
     ): AuthResponse = withContext(Dispatchers.IO) {
         try {
             val payload = json.encodeToString(
-                OtpVerifyPayload(
-                    phoneNumber = phoneNumber,
-                    code = code,
-                    deviceName = deviceName,
+                RegisterPayload(
+                    username = username.trim(),
+                    password = password,
+                    displayName = displayName.trim(),
                     identityKeyBase64 = identityKeyBase64,
-                    displayName = displayName
+                    deviceName = deviceName
                 )
             )
-
             val request = Request.Builder()
-                .url("$baseUrl/api/auth/verify-otp")
+                .url("$baseUrl/api/auth/register")
                 .post(payload.toRequestBody(jsonMediaType))
                 .build()
 
@@ -84,12 +61,64 @@ class ArgusApiClient(
                 if (body.isNotEmpty()) {
                     json.decodeFromString<AuthResponse>(body)
                 } else {
-                    AuthResponse(success = false, error = "Server returned empty response")
+                    AuthResponse(success = false, error = "Server returned empty response (${response.code})")
                 }
             }
         } catch (e: Exception) {
-            android.util.Log.e("ArgusApiClient", "verifyOtp failed: ${e.message}", e)
-            AuthResponse(success = false, error = e.localizedMessage ?: "Network error")
+            android.util.Log.e("ArgusApiClient", "register failed: ${e.message}", e)
+            AuthResponse(success = false, error = e.localizedMessage ?: "Network connection error")
+        }
+    }
+
+    suspend fun login(
+        username: String,
+        password: String,
+        identityKeyBase64: String? = null,
+        deviceName: String = "Android Device"
+    ): AuthResponse = withContext(Dispatchers.IO) {
+        try {
+            val payload = json.encodeToString(
+                LoginPayload(
+                    username = username.trim(),
+                    password = password,
+                    identityKeyBase64 = identityKeyBase64,
+                    deviceName = deviceName
+                )
+            )
+            val request = Request.Builder()
+                .url("$baseUrl/api/auth/login")
+                .post(payload.toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                val body = response.body?.string() ?: ""
+                if (body.isNotEmpty()) {
+                    json.decodeFromString<AuthResponse>(body)
+                } else {
+                    AuthResponse(success = false, error = "Server returned empty response (${response.code})")
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusApiClient", "login failed: ${e.message}", e)
+            AuthResponse(success = false, error = e.localizedMessage ?: "Network connection error")
+        }
+    }
+
+    suspend fun checkUsername(username: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val clean = username.trim().lowercase()
+            val request = Request.Builder()
+                .url("$baseUrl/api/auth/check-username/$clean")
+                .get()
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext false
+                val body = response.body?.string() ?: return@withContext false
+                json.decodeFromString<CheckUsernameResponse>(body).available
+            }
+        } catch (e: Exception) {
+            false
         }
     }
 
@@ -295,32 +324,35 @@ class ArgusApiClient(
 // -----------------------------------------------------------------------------
 
 @Serializable
-data class OtpRequestPayload(val phoneNumber: String)
-
-@Serializable
-data class OtpRequestResponse(
-    val success: Boolean,
-    val message: String? = null,
-    val expiresInSec: Int? = null,
-    val code: String? = null,
-    val devCode: String? = null,
-    val error: String? = null
+data class RegisterPayload(
+    val username: String,
+    val password: String,
+    val displayName: String,
+    val identityKeyBase64: String,
+    val deviceName: String = "Android Device",
+    val platform: String = "android"
 )
 
 @Serializable
-data class OtpVerifyPayload(
-    val phoneNumber: String,
-    val code: String,
-    val deviceName: String,
-    val platform: String = "android",
-    val identityKeyBase64: String,
-    val displayName: String? = null
+data class LoginPayload(
+    val username: String,
+    val password: String,
+    val identityKeyBase64: String? = null,
+    val deviceName: String = "Android Device",
+    val platform: String = "android"
+)
+
+@Serializable
+data class CheckUsernameResponse(
+    val username: String,
+    val available: Boolean
 )
 
 @Serializable
 data class AuthResponse(
     val success: Boolean,
     val token: String? = null,
+    val refreshToken: String? = null,
     val user: User? = null,
     val error: String? = null
 )

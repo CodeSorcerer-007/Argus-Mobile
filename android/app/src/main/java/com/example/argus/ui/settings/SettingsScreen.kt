@@ -303,16 +303,18 @@ fun SettingsScreen(
                             color = TextPrimary
                         )
                         Text(
-                            text = currentUser?.phoneNumber ?: "+1 555 000 0000",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = TextSecondary
+                            text = if (!currentUser?.username.isNullOrBlank()) "@${currentUser?.username}" else "@argus_user",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = EmeraldLight,
+                            fontWeight = FontWeight.SemiBold
                         )
-                        Text(
-                            text = if (currentUser?.username != null) "@${currentUser?.username}" else "Tap to set @username",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (currentUser?.username != null) EmeraldLight else CyanAccent,
-                            fontWeight = FontWeight.Medium
-                        )
+                        if (!currentUser?.about.isNullOrBlank()) {
+                            Text(
+                                text = currentUser?.about ?: "",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary
+                            )
+                        }
                     }
                 }
 

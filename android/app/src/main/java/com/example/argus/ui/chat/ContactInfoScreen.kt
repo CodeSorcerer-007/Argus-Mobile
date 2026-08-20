@@ -128,18 +128,18 @@ fun ContactInfoScreen(
                     color = TextPrimary
                 )
 
-                Text(
-                    text = contact.phoneNumber,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = TextSecondary
-                )
-
-                if (contact.username != null) {
+                if (!contact.username.isNullOrBlank()) {
                     Text(
                         text = "@${contact.username}",
-                        style = MaterialTheme.typography.labelMedium,
+                        style = MaterialTheme.typography.titleMedium,
                         color = EmeraldLight,
-                        fontWeight = FontWeight.Medium
+                        fontWeight = FontWeight.SemiBold
+                    )
+                } else if (!contact.phoneNumber.isNullOrBlank()) {
+                    Text(
+                        text = contact.phoneNumber,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextSecondary
                     )
                 }
 

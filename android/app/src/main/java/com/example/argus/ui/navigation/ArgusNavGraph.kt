@@ -14,8 +14,7 @@ import com.example.argus.data.model.Conversation
 import com.example.argus.data.model.User
 import com.example.argus.theme.ObsidianBlack
 import com.example.argus.ui.ai.AiAssistantScreen
-import com.example.argus.ui.auth.OtpVerifyScreen
-import com.example.argus.ui.auth.PhoneAuthScreen
+import com.example.argus.ui.auth.ArgusAuthScreen
 import com.example.argus.ui.auth.WelcomeScreen
 import com.example.argus.ui.call.CallScreen
 import com.example.argus.ui.chat.ChatScreen
@@ -31,8 +30,7 @@ import kotlinx.coroutines.launch
 
 sealed class Screen {
     object Welcome : Screen()
-    object PhoneAuth : Screen()
-    data class OtpVerify(val phoneNumber: String, val suggestedCode: String = "") : Screen()
+    object Auth : Screen()
     object Main : Screen()
     data class Chat(val conversationId: String) : Screen()
     data class ContactInfo(val contact: Contact) : Screen()
@@ -69,69 +67,48 @@ fun ArgusNavGraph(container: AppContainer) {
         when (val screen = currentScreen) {
             is Screen.Welcome -> {
                 WelcomeScreen(
-                    onGetStartedClick = { currentScreen = Screen.PhoneAuth }
+                    onGetStartedClick = { currentScreen = Screen.Auth }
                 )
             }
 
-            is Screen.PhoneAuth -> {
+            is Screen.Auth -> {
                 var isLoading by remember { mutableStateOf(false) }
                 var errorMsg by remember { mutableStateOf<String?>(null) }
 
-                PhoneAuthScreen(
+                ArgusAuthScreen(
                     currentServerUrl = container.preferences.getServerUrl(),
                     onSaveServerUrl = { newUrl ->
                         container.preferences.setServerUrl(newUrl)
                     },
-                    onRequestOtp = { phone ->
+                    onLogin = { username, password ->
                         isLoading = true
                         errorMsg = null
                         coroutineScope.launch {
-                            try {
-                                val otpResp = container.authRepository.requestOtp(phone)
-                                isLoading = false
-                                if (otpResp.success) {
-                                    val code = otpResp.code ?: otpResp.devCode ?: ""
-                                    currentScreen = Screen.OtpVerify(phone, code)
-                                } else {
-                                    errorMsg = otpResp.message ?: "Failed to request OTP"
-                                }
-                            } catch (e: Exception) {
-                                isLoading = false
-                                errorMsg = e.localizedMessage ?: "Failed to request OTP"
-                            }
-                        }
-                    },
-                    isLoading = isLoading,
-                    errorMessage = errorMsg
-                )
-            }
-
-            is Screen.OtpVerify -> {
-                var isLoading by remember { mutableStateOf(false) }
-                var errorMsg by remember { mutableStateOf<String?>(null) }
-
-                OtpVerifyScreen(
-                    phoneNumber = screen.phoneNumber,
-                    initialCode = screen.suggestedCode,
-                    onVerifyOtp = { code ->
-                        isLoading = true
-                        errorMsg = null
-                        coroutineScope.launch {
-                            val res = container.authRepository.verifyOtp(screen.phoneNumber, code)
+                            val res = container.authRepository.login(username, password)
                             isLoading = false
                             if (res.isSuccess) {
                                 currentScreen = Screen.Main
                             } else {
-                                errorMsg = res.exceptionOrNull()?.localizedMessage ?: "Verification failed"
+                                errorMsg = res.exceptionOrNull()?.localizedMessage ?: "Login failed. Check your username and password."
                             }
                         }
                     },
-                    onResendClick = {
+                    onRegister = { username, password, displayName ->
+                        isLoading = true
+                        errorMsg = null
                         coroutineScope.launch {
-                            container.authRepository.requestOtp(screen.phoneNumber)
+                            val res = container.authRepository.register(username, password, displayName)
+                            isLoading = false
+                            if (res.isSuccess) {
+                                currentScreen = Screen.Main
+                            } else {
+                                errorMsg = res.exceptionOrNull()?.localizedMessage ?: "Registration failed."
+                            }
                         }
                     },
-                    onBackClick = { currentScreen = Screen.PhoneAuth },
+                    onCheckUsername = { username ->
+                        container.authRepository.checkUsernameAvailability(username)
+                    },
                     isLoading = isLoading,
                     errorMessage = errorMsg
                 )
@@ -151,9 +128,9 @@ fun ArgusNavGraph(container: AppContainer) {
                             val convId = container.authRepository.startConversationWithUser(
                                 User(
                                     id = contact.userId,
-                                    phoneNumber = contact.phoneNumber,
+                                    username = contact.username ?: "",
                                     displayName = contact.displayName,
-                                    username = contact.username
+                                    phoneNumber = contact.phoneNumber
                                 )
                             )
                             currentScreen = Screen.Chat(convId)
@@ -198,9 +175,9 @@ fun ArgusNavGraph(container: AppContainer) {
                             val convId = container.authRepository.startConversationWithUser(
                                 User(
                                     id = screen.contact.userId,
-                                    phoneNumber = screen.contact.phoneNumber,
+                                    username = screen.contact.username ?: "",
                                     displayName = screen.contact.displayName,
-                                    username = screen.contact.username
+                                    phoneNumber = screen.contact.phoneNumber
                                 )
                             )
                             currentScreen = Screen.Chat(convId)

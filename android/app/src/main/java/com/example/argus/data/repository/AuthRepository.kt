@@ -28,22 +28,17 @@ class AuthRepository(
         return preferences.getAuthToken() != null && preferences.loadCurrentUser() != null
     }
 
-    suspend fun requestOtp(phoneNumber: String): com.example.argus.data.remote.OtpRequestResponse {
-        return apiClient.requestOtp(phoneNumber)
-    }
-
-    suspend fun verifyOtp(phoneNumber: String, code: String, displayName: String? = null): Result<User> {
+    suspend fun register(username: String, password: String, displayName: String): Result<User> {
         return try {
-            // Ensure local identity key pair exists
             val identityKeyPair = getOrCreateIdentityKeyPair()
             val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}"
 
-            val response = apiClient.verifyOtp(
-                phoneNumber = phoneNumber,
-                code = code,
-                deviceName = deviceName,
+            val response = apiClient.register(
+                username = username.trim(),
+                password = password,
+                displayName = displayName.trim(),
                 identityKeyBase64 = identityKeyPair.publicKeyBase64,
-                displayName = displayName
+                deviceName = deviceName
             )
 
             if (response.success && response.user != null && response.token != null) {
@@ -58,11 +53,46 @@ class AuthRepository(
 
                 Result.success(response.user)
             } else {
-                Result.failure(Exception(response.error ?: "Verification failed"))
+                Result.failure(Exception(response.error ?: "Registration failed"))
             }
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    suspend fun login(username: String, password: String): Result<User> {
+        return try {
+            val identityKeyPair = getOrCreateIdentityKeyPair()
+            val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}"
+
+            val response = apiClient.login(
+                username = username.trim(),
+                password = password,
+                identityKeyBase64 = identityKeyPair.publicKeyBase64,
+                deviceName = deviceName
+            )
+
+            if (response.success && response.user != null && response.token != null) {
+                preferences.setAuthToken(response.token)
+                preferences.saveCurrentUser(response.user)
+
+                // Ensure initial PreKey bundle is published
+                publishInitialPreKeys(identityKeyPair)
+
+                // Connect WebSocket
+                webSocketClient.connect()
+
+                Result.success(response.user)
+            } else {
+                Result.failure(Exception(response.error ?: "Login failed"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun checkUsernameAvailability(username: String): Boolean {
+        return apiClient.checkUsername(username)
     }
 
     private suspend fun publishInitialPreKeys(identityKeyPair: ArgusKeyPair) {

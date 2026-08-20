@@ -39,6 +39,7 @@ export class ArgusDatabase {
   public refreshTokens: Map<string, RefreshTokenRecord> = new Map();
   public revokedTokens: Set<string> = new Set();
   public failedOtpAttempts: Map<string, { count: number; lockedUntil: number }> = new Map();
+  public failedPasswordAttempts: Map<string, { count: number; lockedUntil: number }> = new Map();
 
   public schemaMetadata: SchemaMetadata = {
     schemaVersion: CURRENT_SCHEMA_VERSION,
@@ -207,6 +208,29 @@ export class ArgusDatabase {
       if (u.username?.toLowerCase() === clean) return u;
     }
     return undefined;
+  }
+
+  public isUsernameAvailable(username: string): boolean {
+    return this.findUserByUsername(username) === undefined;
+  }
+
+  public hashPassword(password: string, salt: string): string {
+    return crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
+  }
+
+  public searchUsers(query: string): User[] {
+    const clean = query.toLowerCase().trim().replace(/^@/, '');
+    if (!clean) return [];
+    const results: User[] = [];
+    for (const u of this.users.values()) {
+      if (
+        u.username?.toLowerCase().includes(clean) ||
+        u.displayName.toLowerCase().includes(clean)
+      ) {
+        results.push(u);
+      }
+    }
+    return results.slice(0, 30);
   }
 
   public popOneTimePreKey(userId: string, deviceId: string): { keyId: number; publicKeyBase64: string } | null {

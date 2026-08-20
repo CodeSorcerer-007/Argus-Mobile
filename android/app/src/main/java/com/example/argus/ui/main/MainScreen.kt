@@ -225,7 +225,7 @@ fun MainScreen(
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(text = user.displayName, style = MaterialTheme.typography.titleMedium, color = TextPrimary)
                                         Text(
-                                            text = if (user.username != null) "@${user.username}" else user.phoneNumber,
+                                            text = if (user.username.isNotBlank()) "@${user.username}" else (user.phoneNumber ?: ""),
                                             style = MaterialTheme.typography.bodySmall,
                                             color = EmeraldLight
                                         )

@@ -1,9 +1,11 @@
 export interface User {
   id: string;
-  phoneNumber: string;
-  phoneHash: string;
-  username?: string;
+  username: string;
   displayName: string;
+  passwordHash?: string;
+  salt?: string;
+  phoneNumber?: string;
+  phoneHash?: string;
   avatarUrl?: string;
   about?: string;
   identityKeyBase64: string;

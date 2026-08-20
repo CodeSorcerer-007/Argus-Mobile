@@ -45,9 +45,9 @@ enum class VaultItemType {
 @Serializable
 data class User(
     val id: String,
-    val phoneNumber: String,
-    val username: String? = null,
-    val displayName: String,
+    val username: String = "",
+    val displayName: String = "",
+    val phoneNumber: String? = null,
     val avatarUrl: String? = null,
     val about: String? = null,
     val identityKeyBase64: String = "",
@@ -60,8 +60,8 @@ data class Contact(
     val id: String,
     val userId: String,
     val displayName: String,
-    val phoneNumber: String,
     val username: String? = null,
+    val phoneNumber: String? = null,
     val avatarUrl: String? = null,
     val identityKeyBase64: String = "",
     val isVerified: Boolean = false,

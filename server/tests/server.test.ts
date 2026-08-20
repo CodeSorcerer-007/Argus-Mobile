@@ -22,12 +22,14 @@ describe('Argus Comprehensive Production Test Suite', () => {
   let aliceToken: string;
   let aliceRefreshToken: string;
   let aliceUserId: string;
-  const alicePhone = '+15550001111';
+  const aliceUsername = 'alicesecurity';
+  const alicePassword = 'SecurePassword123!';
   const aliceIdentityKey = 'AliceIdentityPublicKeyBase64SamplePayloadForArgus2026==';
 
   let bobToken: string;
   let bobUserId: string;
-  const bobPhone = '+15550002222';
+  const bobUsername = 'bobcrypto';
+  const bobPassword = 'SecurePassword456!';
   const bobIdentityKey = 'BobIdentityPublicKeyBase64SamplePayloadForArgus2026====';
 
   beforeAll((done) => {
@@ -77,100 +79,110 @@ describe('Argus Comprehensive Production Test Suite', () => {
   });
 
   // ===========================================================================
-  // 2. AUTHENTICATION, OTP SECURITY & BRUTE-FORCE DEFENSE
+  // 2. USER ID & PASSWORD AUTHENTICATION & SECURITY
   // ===========================================================================
-  describe('Authentication & Zero-Knowledge OTP', () => {
-    test('POST /api/auth/request-otp rejects invalid phone format', async () => {
-      const res = await request(app)
-        .post('/api/auth/request-otp')
-        .send({ phoneNumber: 'invalid_phone_123' });
-
-      expect(res.status).toBe(400);
-      expect(res.body.error).toContain('E.164');
-    });
-
-    test('POST /api/auth/request-otp generates OTP without leaking code in response', async () => {
-      const res = await request(app)
-        .post('/api/auth/request-otp')
-        .send({ phoneNumber: alicePhone });
-
+  describe('User ID & Password Authentication', () => {
+    test('GET /api/auth/check-username/:username checks availability', async () => {
+      const res = await request(app).get('/api/auth/check-username/alicesecurity');
       expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
-      expect(res.body.code).toBeUndefined(); // Zero-knowledge: code never exposed in HTTP response
-      expect(res.body.devCode).toBeUndefined();
-      expect(db.otps.has(alicePhone)).toBe(true);
+      expect(res.body.available).toBe(true);
     });
 
-    test('POST /api/auth/verify-otp enforces brute-force lockout after 5 failures', async () => {
-      const targetPhone = '+15550009999';
-      await request(app).post('/api/auth/request-otp').send({ phoneNumber: targetPhone });
-
-      for (let i = 1; i <= 4; i++) {
-        const failRes = await request(app)
-          .post('/api/auth/verify-otp')
-          .send({
-            phoneNumber: targetPhone,
-            code: '999999',
-            identityKeyBase64: aliceIdentityKey
-          });
-        expect(failRes.status).toBe(400);
-        expect(failRes.body.error).toContain('attempts remaining');
-      }
-
-      // 5th failed attempt should trigger 429 lockout
-      const lockRes = await request(app)
-        .post('/api/auth/verify-otp')
-        .send({
-          phoneNumber: targetPhone,
-          code: '999999',
-          identityKeyBase64: aliceIdentityKey
-        });
-      expect(lockRes.status).toBe(429);
-      expect(lockRes.body.error).toContain('locked');
-    });
-
-    test('POST /api/auth/verify-otp successfully authenticates Alice', async () => {
-      const otpRecord = db.otps.get(alicePhone);
-      expect(otpRecord).toBeDefined();
-
+    test('POST /api/auth/register creates user account and issues tokens', async () => {
       const res = await request(app)
-        .post('/api/auth/verify-otp')
+        .post('/api/auth/register')
         .send({
-          phoneNumber: alicePhone,
-          code: otpRecord!.code,
-          deviceName: 'Pixel 9 Pro',
+          username: aliceUsername,
+          password: alicePassword,
+          displayName: 'Alice Security',
           identityKeyBase64: aliceIdentityKey,
-          displayName: 'Alice Security'
+          deviceName: 'Pixel 9 Pro'
         });
 
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(201);
       expect(res.body.success).toBe(true);
       expect(res.body.token).toBeDefined();
       expect(res.body.refreshToken).toBeDefined();
-      expect(res.body.user.phoneNumber).toBe(alicePhone);
+      expect(res.body.user.username).toBe(aliceUsername);
+      expect(res.body.user.displayName).toBe('Alice Security');
 
       aliceToken = res.body.token;
       aliceRefreshToken = res.body.refreshToken;
       aliceUserId = res.body.user.id;
     });
 
-    test('POST /api/auth/verify-otp successfully authenticates Bob', async () => {
-      await request(app).post('/api/auth/request-otp').send({ phoneNumber: bobPhone });
-      const otpRecord = db.otps.get(bobPhone);
-
+    test('POST /api/auth/register rejects duplicate username', async () => {
       const res = await request(app)
-        .post('/api/auth/verify-otp')
+        .post('/api/auth/register')
         .send({
-          phoneNumber: bobPhone,
-          code: otpRecord!.code,
-          deviceName: 'Galaxy S25 Ultra',
+          username: aliceUsername.toUpperCase(), // case-insensitive check
+          password: 'AnotherPassword123!',
+          displayName: 'Alice Duplicate',
+          identityKeyBase64: aliceIdentityKey
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('already taken');
+    });
+
+    test('POST /api/auth/register creates Bob account', async () => {
+      const res = await request(app)
+        .post('/api/auth/register')
+        .send({
+          username: bobUsername,
+          password: bobPassword,
+          displayName: 'Bob Crypto',
           identityKeyBase64: bobIdentityKey,
-          displayName: 'Bob Crypto'
+          deviceName: 'Galaxy S25 Ultra'
+        });
+
+      expect(res.status).toBe(201);
+      expect(res.body.success).toBe(true);
+      bobToken = res.body.token;
+      bobUserId = res.body.user.id;
+    });
+
+    test('POST /api/auth/login enforces brute-force lockout after 5 incorrect password attempts', async () => {
+      for (let i = 1; i <= 4; i++) {
+        const failRes = await request(app)
+          .post('/api/auth/login')
+          .send({
+            username: aliceUsername,
+            password: 'WrongPassword999!'
+          });
+        expect(failRes.status).toBe(401);
+        expect(failRes.body.error).toContain('remaining');
+      }
+
+      // 5th failed attempt should trigger 429 lockout
+      const lockRes = await request(app)
+        .post('/api/auth/login')
+        .send({
+          username: aliceUsername,
+          password: 'WrongPassword999!'
+        });
+      expect(lockRes.status).toBe(429);
+      expect(lockRes.body.error).toContain('locked');
+
+      // Clear lockout for remaining tests
+      db.failedPasswordAttempts.delete(aliceUsername);
+    });
+
+    test('POST /api/auth/login successfully logs in Alice with correct password', async () => {
+      const res = await request(app)
+        .post('/api/auth/login')
+        .send({
+          username: aliceUsername,
+          password: alicePassword
         });
 
       expect(res.status).toBe(200);
-      bobToken = res.body.token;
-      bobUserId = res.body.user.id;
+      expect(res.body.success).toBe(true);
+      expect(res.body.token).toBeDefined();
+      expect(res.body.user.username).toBe(aliceUsername);
+
+      aliceToken = res.body.token;
+      aliceRefreshToken = res.body.refreshToken;
     });
 
     test('POST /api/auth/refresh-token rotates access token and refresh token (RTR)', async () => {
@@ -308,7 +320,18 @@ describe('Argus Comprehensive Production Test Suite', () => {
         .set('Authorization', `Bearer ${aliceToken}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.user.phoneNumber).toBe(alicePhone);
+      expect(res.body.user.username).toBe(aliceUsername);
+      expect(res.body.user.displayName).toBe('Alice Security');
+    });
+
+    test('GET /api/users/search finds users by username handle', async () => {
+      const res = await request(app)
+        .get('/api/users/search?q=bob')
+        .set('Authorization', `Bearer ${aliceToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.results.length).toBeGreaterThanOrEqual(1);
+      expect(res.body.results[0].username).toBe(bobUsername);
     });
 
     test('PUT /api/users/me updates profile and prevents duplicate usernames', async () => {
@@ -331,19 +354,6 @@ describe('Argus Comprehensive Production Test Suite', () => {
         .send({ username: 'alice_wonder' });
 
       expect(conflictRes.status).toBe(409);
-    });
-
-    test('POST /api/users/discover-contacts matches salted phone hashes', async () => {
-      const aliceHash = db.hashPhone(alicePhone);
-      const bobHash = db.hashPhone(bobPhone);
-
-      const res = await request(app)
-        .post('/api/users/discover-contacts')
-        .set('Authorization', `Bearer ${aliceToken}`)
-        .send({ phoneHashes: [aliceHash, bobHash, 'unregistered_hash_123'] });
-
-      expect(res.status).toBe(200);
-      expect(res.body.contacts.length).toBe(2);
     });
 
     test('POST /api/users/push-token registers FCM device token', async () => {
