@@ -185,8 +185,6 @@ private fun FeatureRow(
 
 @Composable
 fun ArgusAuthScreen(
-    currentServerUrl: String,
-    onSaveServerUrl: (String) -> Unit,
     onLogin: (username: String, password: String) -> Unit,
     onRegister: (username: String, password: String, displayName: String) -> Unit,
     onCheckUsername: suspend (String) -> Boolean,
@@ -197,8 +195,6 @@ fun ArgusAuthScreen(
     val keyboardController = LocalSoftwareKeyboardController.current
 
     var activeTab by remember { mutableStateOf(AuthTab.SIGN_IN) }
-    var showServerDialog by remember { mutableStateOf(false) }
-    var tempServerUrl by remember(currentServerUrl) { mutableStateOf(currentServerUrl) }
 
     // Sign In form fields
     var loginUsername by remember { mutableStateOf("") }
@@ -235,81 +231,6 @@ fun ArgusAuthScreen(
         }
     }
 
-    if (showServerDialog) {
-        AlertDialog(
-            onDismissRequest = { showServerDialog = false },
-            containerColor = ObsidianCard,
-            title = {
-                Text("Backend Server Gateway", color = TextPrimary, fontWeight = FontWeight.Bold)
-            },
-            text = {
-                Column {
-                    Text(
-                        "Configure the endpoint of your Argus backend server (e.g. Render Cloud URL or local IP):",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    OutlinedTextField(
-                        value = tempServerUrl,
-                        onValueChange = { tempServerUrl = it },
-                        label = { Text("Server URL") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = EmeraldPrimary,
-                            unfocusedBorderColor = ObsidianBorder,
-                            focusedTextColor = TextPrimary,
-                            unfocusedTextColor = TextPrimary,
-                            focusedContainerColor = ObsidianSurface,
-                            unfocusedContainerColor = ObsidianSurface
-                        )
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        TextButton(
-                            onClick = { tempServerUrl = "https://argus-backend-server.onrender.com" },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                        ) {
-                            Text("Render Cloud", fontSize = 12.sp, color = EmeraldLight)
-                        }
-                        TextButton(
-                            onClick = { tempServerUrl = "http://10.0.2.2:8080" },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                        ) {
-                            Text("Emulator", fontSize = 12.sp, color = EmeraldLight)
-                        }
-                        TextButton(
-                            onClick = { tempServerUrl = "http://localhost:8080" },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
-                        ) {
-                            Text("Localhost", fontSize = 12.sp, color = EmeraldLight)
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        onSaveServerUrl(tempServerUrl)
-                        showServerDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary)
-                ) {
-                    Text("Save", color = ObsidianBlack, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showServerDialog = false }) {
-                    Text("Cancel", color = TextSecondary)
-                }
-            }
-        )
-    }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -329,40 +250,29 @@ fun ArgusAuthScreen(
             // Header
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        modifier = Modifier
-                            .size(38.dp)
-                            .clip(CircleShape)
-                            .background(EmeraldPrimary.copy(alpha = 0.15f))
-                            .border(1.dp, EmeraldPrimary.copy(alpha = 0.5f), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Image(
-                            painter = painterResource(id = R.drawable.argus_logo),
-                            contentDescription = "Logo",
-                            modifier = Modifier.size(30.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        text = "Argus",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = TextPrimary
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(EmeraldPrimary.copy(alpha = 0.15f))
+                        .border(1.dp, EmeraldPrimary.copy(alpha = 0.5f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.argus_logo),
+                        contentDescription = "Logo",
+                        modifier = Modifier.size(30.dp)
                     )
                 }
-
-                IconButton(onClick = { showServerDialog = true }) {
-                    Icon(
-                        imageVector = Icons.Default.Dns,
-                        contentDescription = "Server Settings",
-                        tint = EmeraldPrimary
-                    )
-                }
+                Spacer(modifier = Modifier.width(10.dp))
+                Text(
+                    text = "Argus",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = TextPrimary
+                )
             }
 
             Spacer(modifier = Modifier.height(20.dp))

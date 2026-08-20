@@ -102,7 +102,7 @@ class ArgusPreferences(context: Context) {
     }
 
     fun getServerUrl(): String {
-        return prefs.getString("pref_server_url", "https://argus-backend-5cg3.onrender.com") ?: "https://argus-backend-5cg3.onrender.com"
+        return DEFAULT_SERVER_URL
     }
 
     fun setServerUrl(url: String) {
@@ -111,14 +111,12 @@ class ArgusPreferences(context: Context) {
     }
 
     fun getWebSocketUrl(): String {
-        val httpUrl = getServerUrl()
-        return if (httpUrl.startsWith("https://")) {
-            httpUrl.replaceFirst("https://", "wss://") + "/ws"
-        } else if (httpUrl.startsWith("http://")) {
-            httpUrl.replaceFirst("http://", "ws://") + "/ws"
-        } else {
-            "ws://$httpUrl/ws"
-        }
+        return "wss://argus-backend-5cg3.onrender.com/ws"
+    }
+
+    companion object {
+        const val DEFAULT_SERVER_URL = "https://argus-backend-5cg3.onrender.com"
+        const val DEFAULT_WS_URL = "wss://argus-backend-5cg3.onrender.com/ws"
     }
 
     fun clearAll() {

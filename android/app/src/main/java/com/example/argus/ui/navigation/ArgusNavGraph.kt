@@ -76,10 +76,6 @@ fun ArgusNavGraph(container: AppContainer) {
                 var errorMsg by remember { mutableStateOf<String?>(null) }
 
                 ArgusAuthScreen(
-                    currentServerUrl = container.preferences.getServerUrl(),
-                    onSaveServerUrl = { newUrl ->
-                        container.preferences.setServerUrl(newUrl)
-                    },
                     onLogin = { username, password ->
                         isLoading = true
                         errorMsg = null

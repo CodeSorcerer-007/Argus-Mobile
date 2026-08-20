@@ -58,9 +58,6 @@ fun SettingsScreen(
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
 
-    var showServerDialog by remember { mutableStateOf(false) }
-    var serverUrlInput by remember { mutableStateOf(preferences.getServerUrl()) }
-
     // Personal QR Code Modal
     if (showQrDialog) {
         val qrPayload = "argus-user:${currentUser?.id ?: "me"}:${currentUser?.username ?: "user"}"
@@ -203,56 +200,6 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showEditProfileDialog = false }, enabled = !isProfileSaving) {
-                    Text("Cancel", color = TextSecondary)
-                }
-            }
-        )
-    }
-
-    // Backend Gateway Dialog
-    if (showServerDialog) {
-        AlertDialog(
-            onDismissRequest = { showServerDialog = false },
-            containerColor = ObsidianCard,
-            title = {
-                Text("Backend Server Gateway", color = TextPrimary, fontWeight = FontWeight.Bold)
-            },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(
-                        "Configure the active Argus E2EE Gateway endpoint.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = TextSecondary
-                    )
-                    OutlinedTextField(
-                        value = serverUrlInput,
-                        onValueChange = { serverUrlInput = it },
-                        label = { Text("Server Base URL") },
-                        singleLine = true,
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = EmeraldPrimary,
-                            unfocusedBorderColor = ObsidianBorder,
-                            focusedTextColor = TextPrimary,
-                            unfocusedTextColor = TextPrimary
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        preferences.setServerUrl(serverUrlInput)
-                        showServerDialog = false
-                        Toast.makeText(context, "Server URL updated to $serverUrlInput", Toast.LENGTH_SHORT).show()
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary)
-                ) {
-                    Text("Save", color = TextOnEmerald)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showServerDialog = false }) {
                     Text("Cancel", color = TextSecondary)
                 }
             }
@@ -434,15 +381,7 @@ fun SettingsScreen(
                     Toast.makeText(context, "Local cache cleaned (24.8 MB freed)", Toast.LENGTH_SHORT).show()
                 }
             )
-            SettingsClickableRow(
-                icon = Icons.Default.Dns,
-                title = "Backend Server Gateway",
-                subtitle = preferences.getServerUrl(),
-                onClick = {
-                    serverUrlInput = preferences.getServerUrl()
-                    showServerDialog = true
-                }
-            )
+
 
             // ℹ️ App Info Section
             SettingsSectionHeader("App Info")
