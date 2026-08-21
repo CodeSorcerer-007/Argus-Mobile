@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -35,6 +36,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.argus.core.permission.ArgusPermissionType
 import com.example.argus.core.permission.PermissionManager
+import com.example.argus.data.local.ArgusLocalStore
+import com.example.argus.data.model.StatusItem
 import com.example.argus.data.model.User
 import com.example.argus.theme.*
 import com.example.argus.ui.components.ArgusAvatar
@@ -54,15 +57,38 @@ data class EphemeralStatusItem(
     val mediaUri: String? = null
 )
 
+private fun hexToColor(hex: String): Color {
+    return try {
+        Color(android.graphics.Color.parseColor(hex))
+    } catch (e: Exception) {
+        Color(0xFF11998E)
+    }
+}
+
+private fun colorToHex(color: Color): String {
+    val a = (color.alpha * 255).toInt()
+    val r = (color.red * 255).toInt()
+    val g = (color.green * 255).toInt()
+    val b = (color.blue * 255).toInt()
+    return String.format("#%02X%02X%02X%02X", a, r, g, b)
+}
+
 @Composable
 fun StatusScreen(
     currentUser: User?,
+    localStore: ArgusLocalStore? = null,
     onViewStatus: (EphemeralStatusItem) -> Unit,
     onCreateStatus: () -> Unit
 ) {
     val context = LocalContext.current
-    var myStatuses by remember { mutableStateOf(listOf<EphemeralStatusItem>()) }
-    var recentStatuses by remember { mutableStateOf(listOf<EphemeralStatusItem>()) }
+    val coroutineScope = rememberCoroutineScope()
+
+    val storedStatuses: List<StatusItem> by if (localStore != null) {
+        localStore.statusesFlow.collectAsState()
+    } else {
+        remember { mutableStateOf(emptyList()) }
+    }
+
     var showCreateDialog by remember { mutableStateOf(false) }
     var newStatusText by remember { mutableStateOf("") }
     var activeRationalePermission by remember { mutableStateOf<ArgusPermissionType?>(null) }
@@ -75,21 +101,79 @@ fun StatusScreen(
     )
     var selectedColorIndex by remember { mutableIntStateOf(0) }
 
+    val myUserId = currentUser?.id ?: "me"
+
+    val allStatuses = remember(storedStatuses) {
+        if (storedStatuses.isNotEmpty()) {
+            storedStatuses.map { item: StatusItem ->
+                val gradientColors = if (item.backgroundGradientHex.isNotEmpty()) {
+                    item.backgroundGradientHex.map { hexToColor(it) }
+                } else {
+                    listOf(Color(0xFF11998E), Color(0xFF38EF7D))
+                }
+                EphemeralStatusItem(
+                    id = item.id,
+                    userId = item.userId,
+                    userName = item.userName,
+                    avatarUrl = item.avatarUrl,
+                    caption = item.caption,
+                    backgroundGradient = gradientColors,
+                    timestamp = item.timestamp,
+                    isViewed = item.isViewed,
+                    mediaUri = item.mediaUri
+                )
+            }
+        } else {
+            // Seed initial sample statuses for fresh installs
+            listOf(
+                EphemeralStatusItem(
+                    id = "seed_1",
+                    userId = "usr_bob",
+                    userName = "Bob (Security Analyst)",
+                    caption = "🔐 Verified Kyber-1024 hybrid keys. Zero metadata leaked!",
+                    backgroundGradient = listOf(Color(0xFF0F2027), Color(0xFF203A43), Color(0xFF2C5364)),
+                    timestamp = System.currentTimeMillis() - 3600000L,
+                    isViewed = false
+                ),
+                EphemeralStatusItem(
+                    id = "seed_2",
+                    userId = "usr_alice",
+                    userName = "Alice",
+                    caption = "🛡️ Argus Shield rating: 100% Secure!",
+                    backgroundGradient = listOf(Color(0xFF11998E), Color(0xFF38EF7D)),
+                    timestamp = System.currentTimeMillis() - 7200000L,
+                    isViewed = false
+                )
+            )
+        }
+    }
+
+    val myStatuses = remember(allStatuses, myUserId) {
+        allStatuses.filter { it.userId == myUserId }
+    }
+
+    val recentStatuses = remember(allStatuses, myUserId) {
+        allStatuses.filter { it.userId != myUserId }
+    }
+
     // Camera Capture for Status
     val statusCameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicturePreview()
     ) { bitmap: Bitmap? ->
         if (bitmap != null) {
-            val item = EphemeralStatusItem(
-                id = "my_photo_${System.currentTimeMillis()}",
-                userId = currentUser?.id ?: "me",
+            val hexList = listOf("#FF1B2838", "#FF2A475E")
+            val statusItem = StatusItem(
+                id = "status_cam_${System.currentTimeMillis()}",
+                userId = myUserId,
                 userName = currentUser?.displayName ?: "My Status",
+                avatarUrl = currentUser?.avatarUrl,
                 caption = "📷 Photo Status",
-                backgroundGradient = listOf(Color(0xFF1B2838), Color(0xFF2A475E)),
+                backgroundGradientHex = hexList,
                 timestamp = System.currentTimeMillis(),
+                expiresAt = System.currentTimeMillis() + (24 * 60 * 60 * 1000L),
                 isViewed = true
             )
-            myStatuses = listOf(item) + myStatuses
+            localStore?.saveStatus(statusItem)
             Toast.makeText(context, "Encrypted photo status shared! (24h timer active)", Toast.LENGTH_SHORT).show()
         }
     }
@@ -117,17 +201,20 @@ fun StatusScreen(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
-            val item = EphemeralStatusItem(
-                id = "my_gallery_${System.currentTimeMillis()}",
-                userId = currentUser?.id ?: "me",
+            val hexList = listOf("#FF0D1B2A", "#FF1B263B")
+            val statusItem = StatusItem(
+                id = "status_gal_${System.currentTimeMillis()}",
+                userId = myUserId,
                 userName = currentUser?.displayName ?: "My Status",
+                avatarUrl = currentUser?.avatarUrl,
                 caption = "🖼️ Media Status",
-                backgroundGradient = listOf(Color(0xFF0D1B2A), Color(0xFF1B263B)),
+                backgroundGradientHex = hexList,
                 timestamp = System.currentTimeMillis(),
+                expiresAt = System.currentTimeMillis() + (24 * 60 * 60 * 1000L),
                 isViewed = true,
                 mediaUri = uri.toString()
             )
-            myStatuses = listOf(item) + myStatuses
+            localStore?.saveStatus(statusItem)
             Toast.makeText(context, "Media status shared! (24h timer active)", Toast.LENGTH_SHORT).show()
         }
     }
@@ -269,16 +356,20 @@ fun StatusScreen(
                 Button(
                     onClick = {
                         if (newStatusText.isNotBlank()) {
-                            val item = EphemeralStatusItem(
-                                id = "my_${System.currentTimeMillis()}",
-                                userId = currentUser?.id ?: "me",
+                            val selectedPalette = colorPalettes[selectedColorIndex]
+                            val hexList = selectedPalette.map { colorToHex(it) }
+                            val statusItem = StatusItem(
+                                id = "status_${System.currentTimeMillis()}",
+                                userId = myUserId,
                                 userName = currentUser?.displayName ?: "My Status",
+                                avatarUrl = currentUser?.avatarUrl,
                                 caption = newStatusText.trim(),
-                                backgroundGradient = colorPalettes[selectedColorIndex],
+                                backgroundGradientHex = hexList,
                                 timestamp = System.currentTimeMillis(),
+                                expiresAt = System.currentTimeMillis() + (24 * 60 * 60 * 1000L),
                                 isViewed = true
                             )
-                            myStatuses = listOf(item) + myStatuses
+                            localStore?.saveStatus(statusItem)
                             showCreateDialog = false
                             newStatusText = ""
                             Toast.makeText(context, "Status updated! (Valid for 24h)", Toast.LENGTH_SHORT).show()
@@ -313,7 +404,9 @@ fun StatusScreen(
                     .background(ObsidianSurface)
                     .clickable {
                         if (myStatuses.isNotEmpty()) {
-                            onViewStatus(myStatuses.first())
+                            val st = myStatuses.first()
+                            localStore?.markStatusViewed(st.id)
+                            onViewStatus(st)
                         } else {
                             showCreateDialog = true
                         }
@@ -394,7 +487,10 @@ fun StatusScreen(
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(14.dp))
                         .background(ObsidianSurface)
-                        .clickable { onViewStatus(status) }
+                        .clickable {
+                            localStore?.markStatusViewed(status.id)
+                            onViewStatus(status)
+                        }
                         .padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -430,7 +526,7 @@ fun StatusScreen(
                     }
 
                     Text(
-                        text = "1h ago",
+                        text = "24h TTL",
                         style = MaterialTheme.typography.labelSmall,
                         color = TextMuted
                     )
@@ -449,13 +545,13 @@ fun StatusScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.CircleNotifications,
+                            imageVector = Icons.Default.Timelapse,
                             contentDescription = null,
                             tint = TextMuted,
-                            modifier = Modifier.size(40.dp)
+                            modifier = Modifier.size(48.dp)
                         )
                         Text(
-                            text = "No recent status updates",
+                            text = "No recent updates",
                             style = MaterialTheme.typography.titleMedium,
                             color = TextSecondary,
                             fontWeight = FontWeight.SemiBold
@@ -558,7 +654,7 @@ fun FullScreenStatusViewer(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "Just now",
+                            text = "Disappearing in 24h",
                             style = MaterialTheme.typography.labelSmall,
                             color = Color.White.copy(alpha = 0.8f)
                         )
@@ -602,7 +698,7 @@ fun FullScreenStatusViewer(
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.White.copy(alpha = 0.7f)
                 )
-                Icon(imageVector = Icons.Default.Send, contentDescription = "Reply", tint = Color.White)
+                Icon(imageVector = Icons.AutoMirrored.Filled.Send, contentDescription = "Reply", tint = Color.White)
             }
         }
     }

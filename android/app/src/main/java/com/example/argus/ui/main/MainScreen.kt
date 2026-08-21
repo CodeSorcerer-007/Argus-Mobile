@@ -21,6 +21,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.CallMissed
 import androidx.compose.material.icons.automirrored.filled.CallReceived
 import androidx.compose.material.icons.automirrored.filled.CallMade
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.automirrored.filled.PhoneMissed
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -38,8 +40,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.argus.R
 import com.example.argus.core.permission.ArgusPermissionType
-import com.example.argus.data.local.ArgusLocalStore
 import com.example.argus.core.permission.PermissionManager
+import com.example.argus.data.local.ArgusLocalStore
 import com.example.argus.data.model.CallRecord
 import com.example.argus.data.model.CallStatus
 import com.example.argus.data.model.CallType
@@ -62,8 +64,7 @@ import java.util.*
 enum class MainTab(val title: String, val icon: ImageVector) {
     CHATS("Chats", Icons.Default.ChatBubble),
     UPDATES("Updates", Icons.Default.CircleNotifications),
-    CALLS("Calls", Icons.Default.Phone),
-    VAULT_SHIELD("Shield & Vault", Icons.Default.Security)
+    CALLS("Calls", Icons.Default.Phone)
 }
 
 enum class ChatFilter(val label: String) {
@@ -83,8 +84,6 @@ fun MainScreen(
     onConversationClick: (String) -> Unit,
     onContactClick: (Contact) -> Unit,
     onStartCallClick: (Contact, CallType) -> Unit,
-    onVaultClick: () -> Unit,
-    onShieldClick: () -> Unit,
     onSettingsClick: () -> Unit,
     onAiAssistantClick: () -> Unit,
     onViewStatus: (EphemeralStatusItem) -> Unit = {}
@@ -396,12 +395,12 @@ fun MainScreen(
         )
     }
 
-    // Filter conversations
+    // Filter conversations & contacts (M-5)
     val filteredConversations = remember(conversations, searchQuery, selectedFilter) {
         conversations.filter { conv ->
             val matchesSearch = searchQuery.isEmpty() ||
                     conv.title.contains(searchQuery, ignoreCase = true) ||
-                    (conv.lastSnippet?.contains(searchQuery, ignoreCase = true) == true)
+                    conv.lastSnippet.contains(searchQuery, ignoreCase = true)
 
             val matchesFilter = when (selectedFilter) {
                 ChatFilter.ALL -> true
@@ -411,6 +410,15 @@ fun MainScreen(
             }
 
             matchesSearch && matchesFilter
+        }
+    }
+
+    val matchingContacts = remember(contacts, searchQuery) {
+        if (searchQuery.isBlank()) emptyList()
+        else contacts.filter {
+            it.displayName.contains(searchQuery, ignoreCase = true) ||
+                    (it.username?.contains(searchQuery, ignoreCase = true) == true) ||
+                    (it.phoneNumber?.contains(searchQuery, ignoreCase = true) == true)
         }
     }
 
@@ -453,11 +461,6 @@ fun MainScreen(
                         }
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(onClick = {
-                                Toast.makeText(context, "Encrypted Camera activated", Toast.LENGTH_SHORT).show()
-                            }) {
-                                Icon(imageVector = Icons.Default.CameraAlt, contentDescription = "Camera", tint = TextSecondary)
-                            }
                             IconButton(onClick = { isSearchExpanded = !isSearchExpanded }) {
                                 Icon(imageVector = Icons.Default.Search, contentDescription = "Search", tint = TextSecondary)
                             }
@@ -476,27 +479,19 @@ fun MainScreen(
                                     modifier = Modifier.background(ObsidianCard)
                                 ) {
                                     DropdownMenuItem(
-                                        text = { Text("New Group", color = TextPrimary) },
-                                        leadingIcon = { Icon(Icons.Default.GroupAdd, contentDescription = null, tint = EmeraldPrimary) },
+                                        text = { Text("New Chat / Group", color = TextPrimary) },
+                                        leadingIcon = { Icon(Icons.Default.PersonAdd, contentDescription = null, tint = EmeraldPrimary) },
                                         onClick = {
                                             showOverflowMenu = false
                                             showNewChatDialog = true
                                         }
                                     )
                                     DropdownMenuItem(
-                                        text = { Text("Starred Messages", color = TextPrimary) },
-                                        leadingIcon = { Icon(Icons.Default.Star, contentDescription = null, tint = ShieldAmber) },
+                                        text = { Text("AI Assistant", color = TextPrimary) },
+                                        leadingIcon = { Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = CyanAccent) },
                                         onClick = {
                                             showOverflowMenu = false
-                                            Toast.makeText(context, "No starred messages", Toast.LENGTH_SHORT).show()
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Linked Devices (0)", color = TextPrimary) },
-                                        leadingIcon = { Icon(Icons.Default.Devices, contentDescription = null, tint = CyanAccent) },
-                                        onClick = {
-                                            showOverflowMenu = false
-                                            Toast.makeText(context, "Primary Hardware Device Active", Toast.LENGTH_SHORT).show()
+                                            onAiAssistantClick()
                                         }
                                     )
                                     HorizontalDivider(color = ObsidianBorder, thickness = 0.5.dp)
@@ -523,7 +518,7 @@ fun MainScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .height(48.dp),
-                                placeholder = { Text(text = "Search chats or messages...", fontSize = 13.sp, color = TextMuted) },
+                                placeholder = { Text(text = "Search chats, contacts, messages...", fontSize = 13.sp, color = TextMuted) },
                                 leadingIcon = {
                                     Icon(imageVector = Icons.Default.Search, contentDescription = "Search", tint = EmeraldPrimary, modifier = Modifier.size(18.dp))
                                 },
@@ -548,36 +543,39 @@ fun MainScreen(
                         }
                     }
 
-                    // Filter Chips Bar (WhatsApp Style)
+                    // WhatsApp Style Category Filter Chips (All, Unread, Favorites, Groups)
                     if (selectedTab == MainTab.CHATS) {
                         Spacer(modifier = Modifier.height(10.dp))
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            ChatFilter.values().forEach { filter ->
+                            items(ChatFilter.values()) { filter ->
                                 val isSelected = selectedFilter == filter
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(18.dp))
-                                        .background(if (isSelected) EmeraldPrimary.copy(alpha = 0.2f) else ObsidianCard)
-                                        .border(
-                                            width = 1.dp,
-                                            color = if (isSelected) EmeraldPrimary else ObsidianBorder,
-                                            shape = RoundedCornerShape(18.dp)
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { selectedFilter = filter },
+                                    label = {
+                                        Text(
+                                            text = filter.label,
+                                            fontSize = 12.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                                         )
-                                        .clickable { selectedFilter = filter }
-                                        .padding(horizontal = 14.dp, vertical = 6.dp)
-                                ) {
-                                    Text(
-                                        text = filter.label,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                        color = if (isSelected) EmeraldLight else TextSecondary
-                                    )
-                                }
+                                    },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        containerColor = ObsidianCard,
+                                        selectedContainerColor = EmeraldPrimary.copy(alpha = 0.2f),
+                                        labelColor = TextSecondary,
+                                        selectedLabelColor = EmeraldLight
+                                    ),
+                                    border = FilterChipDefaults.filterChipBorder(
+                                        enabled = true,
+                                        selected = isSelected,
+                                        borderColor = ObsidianBorder,
+                                        selectedBorderColor = EmeraldPrimary
+                                    ),
+                                    shape = RoundedCornerShape(16.dp)
+                                )
                             }
                         }
                     }
@@ -585,15 +583,38 @@ fun MainScreen(
             }
         },
         floatingActionButton = {
-            if (selectedTab == MainTab.CHATS) {
-                FloatingActionButton(
-                    onClick = { showNewChatDialog = true },
-                    containerColor = EmeraldPrimary,
-                    contentColor = TextOnEmerald,
-                    shape = CircleShape,
-                    modifier = Modifier.size(56.dp)
-                ) {
-                    Icon(imageVector = Icons.Default.Chat, contentDescription = "New Chat", modifier = Modifier.size(24.dp))
+            when (selectedTab) {
+                MainTab.CHATS -> {
+                    FloatingActionButton(
+                        onClick = { showNewChatDialog = true },
+                        containerColor = EmeraldPrimary,
+                        contentColor = TextOnEmerald,
+                        shape = CircleShape,
+                        modifier = Modifier.size(56.dp)
+                    ) {
+                        Icon(imageVector = Icons.AutoMirrored.Filled.Chat, contentDescription = "New Chat", modifier = Modifier.size(24.dp))
+                    }
+                }
+                MainTab.CALLS -> {
+                    FloatingActionButton(
+                        onClick = {
+                            val firstContact = contacts.firstOrNull()
+                            if (firstContact != null) {
+                                initiateCallWithPermissionCheck(firstContact, CallType.VOICE)
+                            } else {
+                                showNewChatDialog = true
+                            }
+                        },
+                        containerColor = EmeraldPrimary,
+                        contentColor = TextOnEmerald,
+                        shape = CircleShape,
+                        modifier = Modifier.size(56.dp)
+                    ) {
+                        Icon(imageVector = Icons.Default.AddIcCall, contentDescription = "New Call", modifier = Modifier.size(24.dp))
+                    }
+                }
+                MainTab.UPDATES -> {
+                    // Status creation is accessible via the StatusScreen and stories header
                 }
             }
         },
@@ -662,8 +683,52 @@ fun MainScreen(
                             HorizontalDivider(color = ObsidianBorder, thickness = 0.5.dp, modifier = Modifier.padding(vertical = 4.dp))
                         }
 
+                        // Matching Contacts Section in Search Mode
+                        if (searchQuery.isNotEmpty() && matchingContacts.isNotEmpty()) {
+                            item {
+                                Text(
+                                    text = "CONTACTS",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = EmeraldLight,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                                )
+                            }
+                            items(matchingContacts, key = { "contact_${it.id}" }) { contact ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onContactClick(contact) }
+                                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    ArgusAvatar(name = contact.displayName, size = 46.dp, isOnline = contact.isOnline)
+                                    Spacer(modifier = Modifier.width(14.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(text = contact.displayName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = TextPrimary)
+                                        Text(
+                                            text = if (!contact.username.isNullOrBlank()) "@${contact.username}" else (contact.phoneNumber ?: "E2EE Contact"),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = EmeraldLight
+                                        )
+                                    }
+                                    Icon(imageVector = Icons.Default.ChatBubble, contentDescription = "Chat", tint = EmeraldPrimary, modifier = Modifier.size(20.dp))
+                                }
+                                HorizontalDivider(color = ObsidianBorder.copy(alpha = 0.4f), thickness = 0.5.dp, modifier = Modifier.padding(start = 76.dp))
+                            }
+                            item {
+                                Text(
+                                    text = "CHATS",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = EmeraldLight,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
+
                         // Conversations List
-                        if (filteredConversations.isEmpty()) {
+                        if (filteredConversations.isEmpty() && matchingContacts.isEmpty()) {
                             item {
                                 Box(
                                     modifier = Modifier
@@ -680,7 +745,7 @@ fun MainScreen(
                                         )
                                         Spacer(modifier = Modifier.height(12.dp))
                                         Text(
-                                            text = if (searchQuery.isNotEmpty()) "No chats match \"$searchQuery\"" else "No conversations yet",
+                                            text = if (searchQuery.isNotEmpty()) "No results match \"$searchQuery\"" else "No conversations yet",
                                             style = MaterialTheme.typography.titleMedium,
                                             fontWeight = FontWeight.Bold,
                                             color = TextPrimary
@@ -713,6 +778,7 @@ fun MainScreen(
                 MainTab.UPDATES -> {
                     StatusScreen(
                         currentUser = currentUser,
+                        localStore = authRepository.localStore,
                         onViewStatus = onViewStatus,
                         onCreateStatus = {}
                     )
@@ -723,14 +789,6 @@ fun MainScreen(
                         calls = calls,
                         contacts = contacts,
                         onStartCall = { contact, type -> initiateCallWithPermissionCheck(contact, type) }
-                    )
-                }
-
-                MainTab.VAULT_SHIELD -> {
-                    VaultShieldHubTab(
-                        onVaultClick = onVaultClick,
-                        onShieldClick = onShieldClick,
-                        onAiAssistantClick = onAiAssistantClick
                     )
                 }
             }
@@ -839,7 +897,7 @@ private fun ChatListItemWhatsAppStyle(
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = conversation.lastSnippet ?: "🔒 End-to-end encrypted session",
+                        text = conversation.lastSnippet.ifBlank { "🔒 End-to-end encrypted session" },
                         style = MaterialTheme.typography.bodyMedium,
                         color = if (conversation.unreadCount > 0) TextPrimary else TextSecondary,
                         fontWeight = if (conversation.unreadCount > 0) FontWeight.Medium else FontWeight.Normal,
@@ -944,7 +1002,7 @@ private fun CallsTabWhatsAppStyle(
                     contentAlignment = Alignment.Center
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(imageVector = Icons.Default.PhoneMissed, contentDescription = null, tint = TextMuted, modifier = Modifier.size(56.dp))
+                        Icon(imageVector = Icons.AutoMirrored.Filled.PhoneMissed, contentDescription = null, tint = TextMuted, modifier = Modifier.size(56.dp))
                         Spacer(modifier = Modifier.height(10.dp))
                         Text("No recent calls", style = MaterialTheme.typography.titleMedium, color = TextPrimary, fontWeight = FontWeight.Bold)
                         Text("Your encrypted voice and video calls will appear here.", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
@@ -1025,118 +1083,6 @@ private fun CallsTabWhatsAppStyle(
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun VaultShieldHubTab(
-    onVaultClick: () -> Unit,
-    onShieldClick: () -> Unit,
-    onAiAssistantClick: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        Text(
-            text = "ARGUS SECURITY & INTELLIGENCE",
-            style = MaterialTheme.typography.labelSmall,
-            color = EmeraldLight,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(start = 4.dp)
-        )
-
-        // Argus Shield Card
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(18.dp))
-                .background(ObsidianSurface)
-                .clickable { onShieldClick() }
-                .padding(18.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(52.dp)
-                        .clip(CircleShape)
-                        .background(ShieldGreen.copy(alpha = 0.15f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(imageVector = Icons.Default.Shield, contentDescription = null, tint = ShieldGreen, modifier = Modifier.size(28.dp))
-                }
-                Spacer(modifier = Modifier.width(16.dp))
-                Column {
-                    Text(text = "Argus Privacy Shield", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = TextPrimary)
-                    Text(text = "Live Security Score: 100/100 • E2EE Active", style = MaterialTheme.typography.bodySmall, color = EmeraldLight)
-                }
-            }
-            Icon(imageVector = Icons.Default.ChevronRight, contentDescription = null, tint = TextSecondary)
-        }
-
-        // Argus Vault Card
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(18.dp))
-                .background(ObsidianSurface)
-                .clickable { onVaultClick() }
-                .padding(18.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(52.dp)
-                        .clip(CircleShape)
-                        .background(CyanAccent.copy(alpha = 0.15f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(imageVector = Icons.Default.FolderSpecial, contentDescription = null, tint = CyanAccent, modifier = Modifier.size(28.dp))
-                }
-                Spacer(modifier = Modifier.width(16.dp))
-                Column {
-                    Text(text = "Hardware-Backed Vault", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = TextPrimary)
-                    Text(text = "Keystore AES-256 Secret Notes & Files", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                }
-            }
-            Icon(imageVector = Icons.Default.ChevronRight, contentDescription = null, tint = TextSecondary)
-        }
-
-        // On-Device AI Hub Card
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(18.dp))
-                .background(ObsidianSurface)
-                .clickable { onAiAssistantClick() }
-                .padding(18.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .size(52.dp)
-                        .clip(CircleShape)
-                        .background(EmeraldPrimary.copy(alpha = 0.15f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(imageVector = Icons.Default.AutoAwesome, contentDescription = null, tint = EmeraldPrimary, modifier = Modifier.size(28.dp))
-                }
-                Spacer(modifier = Modifier.width(16.dp))
-                Column {
-                    Text(text = "On-Device AI Engine", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = TextPrimary)
-                    Text(text = "Neural Translation & Context Extraction", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
-                }
-            }
-            Icon(imageVector = Icons.Default.ChevronRight, contentDescription = null, tint = TextSecondary)
         }
     }
 }

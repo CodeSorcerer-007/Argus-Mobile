@@ -4,6 +4,7 @@ import androidx.compose.ui.graphics.Color
 
 // WhatsApp / Telegram Dark & OLED Release Palette
 val ObsidianBlack = Color(0xFF0B141A)
+val ObsidianDark = ObsidianBlack
 val ObsidianSurface = Color(0xFF111B21)
 val ObsidianSurfaceVariant = Color(0xFF182229)
 val ObsidianCard = Color(0xFF1F2C34)
@@ -30,6 +31,8 @@ val IncomingCallGreen = Color(0xFF00A884)
 // Message Bubble Colors
 val BubbleOutgoing = Color(0xFF005C4B)
 val BubbleIncoming = Color(0xFF202C33)
+val EmeraldBubbleMe = BubbleOutgoing
+val SlateBubbleThem = BubbleIncoming
 
 // Text Colors
 val TextPrimary = Color(0xFFE9EDEF)

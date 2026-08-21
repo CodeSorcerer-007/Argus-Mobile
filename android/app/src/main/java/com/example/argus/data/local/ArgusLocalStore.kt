@@ -3,12 +3,15 @@ package com.example.argus.data.local
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import com.example.argus.crypto.vault.ArgusVaultCipher
 import com.example.argus.data.model.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -17,12 +20,14 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
 
     companion object {
         const val DATABASE_NAME = "argus_secure_local.db"
-        const val DATABASE_VERSION = 3
+        const val DATABASE_VERSION = 6
 
         private val json = Json { ignoreUnknownKeys = true }
 
         fun getDirectConversationId(userIdA: String, userIdB: String): String {
-            val sorted = listOf(userIdA, userIdB).sorted()
+            val cleanA = userIdA.trim().lowercase()
+            val cleanB = userIdB.trim().lowercase()
+            val sorted = listOf(cleanA, cleanB).sorted()
             return "conv_${sorted[0]}_${sorted[1]}"
         }
     }
@@ -44,8 +49,19 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
     private val _callsFlow = MutableStateFlow<List<CallRecord>>(emptyList())
     val callsFlow: StateFlow<List<CallRecord>> = _callsFlow.asStateFlow()
 
+    private val _statusesFlow = MutableStateFlow<List<StatusItem>>(emptyList())
+    val statusesFlow: StateFlow<List<StatusItem>> = _statusesFlow.asStateFlow()
+
     init {
         reloadAll()
+
+        // Periodic background purge for disappearing messages and 24h statuses
+        scope.launch {
+            while (isActive) {
+                delay(30_000)
+                purgeExpiredDisappearingMessages()
+            }
+        }
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -86,7 +102,8 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
                 reactions_json TEXT,
                 is_edited INTEGER DEFAULT 0,
                 expires_at INTEGER,
-                is_encrypted INTEGER DEFAULT 1
+                is_encrypted INTEGER DEFAULT 1,
+                wire_payload_json TEXT
             )
             """.trimIndent()
         )
@@ -150,22 +167,65 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
             """.trimIndent()
         )
 
-        // B-Tree Indexes for Microsecond Performance
+        db.execSQL(
+            """
+            CREATE TABLE IF NOT EXISTS statuses (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                user_name TEXT NOT NULL,
+                avatar_url TEXT,
+                caption TEXT NOT NULL,
+                gradient_json TEXT,
+                timestamp INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                media_uri TEXT,
+                is_viewed INTEGER DEFAULT 0
+            )
+            """.trimIndent()
+        )
+
+        // B-Tree Indexes for High Performance
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_messages_conv_ts ON messages(conversation_id, timestamp DESC);")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_messages_status ON messages(status);")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_messages_expires_at ON messages(expires_at);")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_conversations_timestamp ON conversations(last_message_timestamp DESC);")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_contacts_user_id ON contacts(user_id);")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_vault_created ON vault_items(created_at DESC);")
         db.execSQL("CREATE INDEX IF NOT EXISTS idx_calls_timestamp ON calls(timestamp DESC);")
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_statuses_exp ON statuses(expires_at DESC);")
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        db.execSQL("DROP TABLE IF EXISTS conversations")
-        db.execSQL("DROP TABLE IF EXISTS messages")
-        db.execSQL("DROP TABLE IF EXISTS contacts")
-        db.execSQL("DROP TABLE IF EXISTS vault_items")
-        db.execSQL("DROP TABLE IF EXISTS calls")
-        db.execSQL("DROP TABLE IF EXISTS ratchet_sessions")
+        if (oldVersion < 5) {
+            try {
+                db.execSQL("ALTER TABLE messages ADD COLUMN wire_payload_json TEXT")
+            } catch (e: Throwable) {
+                // Column may already exist
+            }
+        }
+        if (oldVersion < 6) {
+            try {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS statuses (
+                        id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        user_name TEXT NOT NULL,
+                        avatar_url TEXT,
+                        caption TEXT NOT NULL,
+                        gradient_json TEXT,
+                        timestamp INTEGER NOT NULL,
+                        expires_at INTEGER NOT NULL,
+                        media_uri TEXT,
+                        is_viewed INTEGER DEFAULT 0
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_statuses_exp ON statuses(expires_at DESC);")
+            } catch (e: Throwable) {
+                // Ignore
+            }
+        }
         onCreate(db)
     }
 
@@ -178,13 +238,20 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
                     "expires_at IS NOT NULL AND expires_at > 0 AND expires_at < ?",
                     arrayOf(now.toString())
                 )
+                val deletedStatuses = writableDatabase.delete(
+                    "statuses",
+                    "expires_at < ?",
+                    arrayOf(now.toString())
+                )
                 if (deletedCount > 0) {
                     loadConversations()
-                    // Refresh in-memory messages for any open conversations
                     val currentMap = _messagesFlow.value.toMutableMap()
                     for (convId in currentMap.keys) {
                         loadMessagesForConversation(convId)
                     }
+                }
+                if (deletedStatuses > 0) {
+                    loadStatuses()
                 }
             } catch (e: Exception) {
                 android.util.Log.e("ArgusLocalStore", "purgeExpiredDisappearingMessages failed", e)
@@ -200,6 +267,7 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
             loadContacts()
             loadVaultItems()
             loadCalls()
+            loadStatuses()
         }
     }
 
@@ -225,6 +293,9 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
                         MessageStatus.DELIVERED
                     }
 
+                    val wireJsonIndex = it.getColumnIndex("wire_payload_json")
+                    val wireJson = if (wireJsonIndex != -1 && !it.isNull(wireJsonIndex)) it.getString(wireJsonIndex) else null
+
                     val msg = Message(
                         id = it.getString(it.getColumnIndexOrThrow("id")),
                         conversationId = convId,
@@ -241,7 +312,8 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
                         reactions = reactionsMap,
                         isEdited = it.getInt(it.getColumnIndexOrThrow("is_edited")) == 1,
                         expiresAt = if (it.isNull(it.getColumnIndexOrThrow("expires_at"))) null else it.getLong(it.getColumnIndexOrThrow("expires_at")),
-                        isEncrypted = it.getInt(it.getColumnIndexOrThrow("is_encrypted")) == 1
+                        isEncrypted = it.getInt(it.getColumnIndexOrThrow("is_encrypted")) == 1,
+                        wirePayloadJson = wireJson
                     )
                     map.getOrPut(convId) { mutableListOf() }.add(msg)
                 }
@@ -330,43 +402,26 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
         }
     }
 
+    fun resetUnreadCount(conversationId: String) {
+        try {
+            val db = writableDatabase
+            db.execSQL("UPDATE conversations SET unread_count = 0 WHERE id = ?", arrayOf(conversationId))
+            loadConversations()
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "resetUnreadCount failed", e)
+        }
+    }
+
     // --- Messages CRUD ---
 
     fun loadMessagesForConversation(convId: String): List<Message> {
         val list = mutableListOf<Message>()
         try {
             val db = readableDatabase
-            val rawId = convId.removePrefix("conv_")
-            val parts = rawId.split("_")
-            val cursor = if (parts.size == 2) {
-                val u1 = parts[0]
-                val u2 = parts[1]
-                db.rawQuery(
-                    """
-                    SELECT * FROM messages 
-                    WHERE conversation_id = ? 
-                       OR conversation_id = ? 
-                       OR conversation_id = ? 
-                       OR ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))
-                    ORDER BY timestamp ASC
-                    """.trimIndent(),
-                    arrayOf(convId, "conv_$u1", "conv_$u2", u1, u2, u2, u1)
-                )
-            } else if (parts.size == 1 && rawId.isNotBlank()) {
-                val peerId = rawId
-                db.rawQuery(
-                    """
-                    SELECT * FROM messages 
-                    WHERE conversation_id = ? 
-                       OR sender_id = ? 
-                       OR recipient_id = ?
-                    ORDER BY timestamp ASC
-                    """.trimIndent(),
-                    arrayOf(convId, peerId, peerId)
-                )
-            } else {
-                db.rawQuery("SELECT * FROM messages WHERE conversation_id = ? ORDER BY timestamp ASC", arrayOf(convId))
-            }
+            val cursor = db.rawQuery(
+                "SELECT * FROM messages WHERE conversation_id = ? ORDER BY timestamp ASC",
+                arrayOf(convId)
+            )
             cursor.use {
                 while (it.moveToNext()) {
                     val reactionsJson = it.getString(it.getColumnIndexOrThrow("reactions_json"))
@@ -382,6 +437,9 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
                     } catch (e: Exception) {
                         MessageStatus.DELIVERED
                     }
+
+                    val wireJsonIndex = it.getColumnIndex("wire_payload_json")
+                    val wireJson = if (wireJsonIndex != -1 && !it.isNull(wireJsonIndex)) it.getString(wireJsonIndex) else null
 
                     list.add(
                         Message(
@@ -400,7 +458,8 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
                             reactions = reactionsMap,
                             isEdited = it.getInt(it.getColumnIndexOrThrow("is_edited")) == 1,
                             expiresAt = if (it.isNull(it.getColumnIndexOrThrow("expires_at"))) null else it.getLong(it.getColumnIndexOrThrow("expires_at")),
-                            isEncrypted = it.getInt(it.getColumnIndexOrThrow("is_encrypted")) == 1
+                            isEncrypted = it.getInt(it.getColumnIndexOrThrow("is_encrypted")) == 1,
+                            wirePayloadJson = wireJson
                         )
                     )
                 }
@@ -414,13 +473,59 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
         return list
     }
 
-    fun saveMessage(msg: Message) {
+    fun loadQueuedMessages(): List<Message> {
+        val list = mutableListOf<Message>()
+        try {
+            val db = readableDatabase
+            val cursor = db.rawQuery("SELECT * FROM messages WHERE status = 'QUEUED' ORDER BY timestamp ASC", null)
+            cursor.use {
+                while (it.moveToNext()) {
+                    val reactionsJson = it.getString(it.getColumnIndexOrThrow("reactions_json"))
+                    val reactionsMap = try {
+                        if (reactionsJson != null) json.decodeFromString<Map<String, String>>(reactionsJson) else emptyMap()
+                    } catch (e: Exception) {
+                        emptyMap()
+                    }
+
+                    val wireJsonIndex = it.getColumnIndex("wire_payload_json")
+                    val wireJson = if (wireJsonIndex != -1 && !it.isNull(wireJsonIndex)) it.getString(wireJsonIndex) else null
+
+                    list.add(
+                        Message(
+                            id = it.getString(it.getColumnIndexOrThrow("id")),
+                            conversationId = it.getString(it.getColumnIndexOrThrow("conversation_id")),
+                            senderId = it.getString(it.getColumnIndexOrThrow("sender_id")),
+                            recipientId = it.getString(it.getColumnIndexOrThrow("recipient_id")),
+                            text = it.getString(it.getColumnIndexOrThrow("text")),
+                            mediaUri = it.getString(it.getColumnIndexOrThrow("media_uri")),
+                            mediaType = it.getString(it.getColumnIndexOrThrow("media_type")),
+                            mediaSizeBytes = it.getLong(it.getColumnIndexOrThrow("media_size")),
+                            status = MessageStatus.QUEUED,
+                            timestamp = it.getLong(it.getColumnIndexOrThrow("timestamp")),
+                            replyToMessageId = it.getString(it.getColumnIndexOrThrow("reply_to_id")),
+                            replyToSnippet = it.getString(it.getColumnIndexOrThrow("reply_to_snippet")),
+                            reactions = reactionsMap,
+                            isEdited = it.getInt(it.getColumnIndexOrThrow("is_edited")) == 1,
+                            expiresAt = if (it.isNull(it.getColumnIndexOrThrow("expires_at"))) null else it.getLong(it.getColumnIndexOrThrow("expires_at")),
+                            isEncrypted = it.getInt(it.getColumnIndexOrThrow("is_encrypted")) == 1,
+                            wirePayloadJson = wireJson
+                        )
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "loadQueuedMessages failed", e)
+        }
+        return list
+    }
+
+    fun saveMessage(msg: Message, currentUserId: String? = null) {
         try {
             val db = writableDatabase
             db.execSQL(
                 """
-                INSERT OR REPLACE INTO messages (id, conversation_id, sender_id, recipient_id, text, media_uri, media_type, media_size, status, timestamp, reply_to_id, reply_to_snippet, reactions_json, is_edited, expires_at, is_encrypted)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO messages (id, conversation_id, sender_id, recipient_id, text, media_uri, media_type, media_size, status, timestamp, reply_to_id, reply_to_snippet, reactions_json, is_edited, expires_at, is_encrypted, wire_payload_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """.trimIndent(),
                 arrayOf<Any?>(
                     msg.id,
@@ -438,28 +543,37 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
                     json.encodeToString(msg.reactions),
                     if (msg.isEdited) 1 else 0,
                     msg.expiresAt,
-                    if (msg.isEncrypted) 1 else 0
+                    if (msg.isEncrypted) 1 else 0,
+                    msg.wirePayloadJson
                 )
             )
 
             val existingConv = loadConversations().firstOrNull { it.id == msg.conversationId }
             val convSnippet = if (msg.mediaType != null) "[${msg.mediaType}] ${msg.text}" else msg.text
+
+            val myId = currentUserId ?: (if (msg.senderId == "me") "me" else null)
+            val isIncoming = myId != null && !msg.senderId.equals(myId, ignoreCase = true)
+            val shouldIncrementUnread = isIncoming && msg.status != MessageStatus.READ
+
             if (existingConv == null) {
-                val peerId = if (msg.senderId == "me") msg.recipientId else msg.senderId
-                val contact = loadContacts().firstOrNull { it.userId == peerId }
+                val peerId = if (myId != null && msg.senderId.equals(myId, ignoreCase = true)) msg.recipientId else msg.senderId
+                val contact = loadContacts().firstOrNull { it.userId.equals(peerId, ignoreCase = true) }
                 val title = contact?.displayName ?: "Direct Chat"
                 val avatarUrl = contact?.avatarUrl
+                val initialUnread = if (shouldIncrementUnread) 1 else 0
+
                 db.execSQL(
                     """
                     INSERT INTO conversations (id, type, title, participant_ids, last_snippet, last_message_timestamp, unread_count, is_pinned, is_archived, is_locked, disappearing_duration, avatar_url)
-                    VALUES (?, 'DIRECT', ?, ?, ?, ?, 0, 0, 0, 0, NULL, ?)
+                    VALUES (?, 'DIRECT', ?, ?, ?, ?, ?, 0, 0, 0, NULL, ?)
                     """.trimIndent(),
-                    arrayOf<Any?>(msg.conversationId, title, json.encodeToString(listOf(peerId)), convSnippet, msg.timestamp, avatarUrl)
+                    arrayOf<Any?>(msg.conversationId, title, json.encodeToString(listOf(peerId)), convSnippet, msg.timestamp, initialUnread, avatarUrl)
                 )
             } else {
+                val newUnread = if (shouldIncrementUnread) existingConv.unreadCount + 1 else existingConv.unreadCount
                 db.execSQL(
-                    "UPDATE conversations SET last_snippet = ?, last_message_timestamp = ? WHERE id = ?",
-                    arrayOf<Any?>(convSnippet, msg.timestamp, msg.conversationId)
+                    "UPDATE conversations SET last_snippet = ?, last_message_timestamp = ?, unread_count = ? WHERE id = ?",
+                    arrayOf<Any?>(convSnippet, msg.timestamp, newUnread, msg.conversationId)
                 )
             }
             loadMessagesForConversation(msg.conversationId)
@@ -473,7 +587,6 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
         try {
             val db = writableDatabase
             db.execSQL("UPDATE messages SET status = ? WHERE id = ?", arrayOf(status.name, messageId))
-            // Reload in-memory
             val currentMap = _messagesFlow.value.toMutableMap()
             for ((convId, list) in currentMap) {
                 val idx = list.indexOfFirst { it.id == messageId }
@@ -702,14 +815,16 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
         }
     }
 
-    // --- Double Ratchet Sessions Persistence ---
+    // --- Double Ratchet Sessions Persistence (Hardware-Encrypted via ArgusVaultCipher) ---
 
     fun saveRatchetSession(peerUserId: String, serializedState: String) {
         try {
+            val encryptedBlob = ArgusVaultCipher.encryptBytes(serializedState.toByteArray(Charsets.UTF_8))
+            val storedPayload = "${encryptedBlob.ivBase64}:${encryptedBlob.ciphertextBase64}"
             val db = writableDatabase
             db.execSQL(
                 "INSERT OR REPLACE INTO ratchet_sessions (peer_user_id, session_data, updated_at) VALUES (?, ?, ?)",
-                arrayOf<Any?>(peerUserId, serializedState, System.currentTimeMillis())
+                arrayOf<Any?>(peerUserId, storedPayload, System.currentTimeMillis())
             )
         } catch (e: Exception) {
             android.util.Log.e("ArgusLocalStore", "saveRatchetSession failed: ${e.message}", e)
@@ -722,13 +837,124 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
             val cursor = db.rawQuery("SELECT session_data FROM ratchet_sessions WHERE peer_user_id = ?", arrayOf(peerUserId))
             cursor.use {
                 if (it.moveToFirst()) {
-                    return it.getString(0)
+                    val rawPayload = it.getString(0) ?: return null
+                    if (rawPayload.contains(":")) {
+                        val parts = rawPayload.split(":", limit = 2)
+                        val decrypted = ArgusVaultCipher.decryptBytes(parts[0], parts[1])
+                        return String(decrypted, Charsets.UTF_8)
+                    } else {
+                        // Fallback unencrypted legacy format
+                        return rawPayload
+                    }
                 }
             }
         } catch (e: Exception) {
             android.util.Log.e("ArgusLocalStore", "getRatchetSession failed: ${e.message}", e)
         }
         return null
+    }
+
+    fun deleteRatchetSession(peerUserId: String) {
+        try {
+            val db = writableDatabase
+            db.execSQL("DELETE FROM ratchet_sessions WHERE peer_user_id = ?", arrayOf(peerUserId))
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "deleteRatchetSession failed: ${e.message}", e)
+        }
+    }
+
+    // --- Statuses Persistence ---
+
+    fun saveStatus(item: StatusItem) {
+        try {
+            val db = writableDatabase
+            val gradientJson = json.encodeToString(item.backgroundGradientHex)
+            db.execSQL(
+                """
+                INSERT OR REPLACE INTO statuses (
+                    id, user_id, user_name, avatar_url, caption, gradient_json, timestamp, expires_at, media_uri, is_viewed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """.trimIndent(),
+                arrayOf<Any?>(
+                    item.id,
+                    item.userId,
+                    item.userName,
+                    item.avatarUrl,
+                    item.caption,
+                    gradientJson,
+                    item.timestamp,
+                    item.expiresAt,
+                    item.mediaUri,
+                    if (item.isViewed) 1 else 0
+                )
+            )
+            loadStatuses()
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "saveStatus failed: ${e.message}", e)
+        }
+    }
+
+    fun loadStatuses(): List<StatusItem> {
+        val list = mutableListOf<StatusItem>()
+        try {
+            val db = readableDatabase
+            val now = System.currentTimeMillis()
+            val cursor = db.rawQuery(
+                "SELECT id, user_id, user_name, avatar_url, caption, gradient_json, timestamp, expires_at, media_uri, is_viewed FROM statuses WHERE expires_at > ? ORDER BY timestamp DESC",
+                arrayOf(now.toString())
+            )
+            cursor.use {
+                while (it.moveToNext()) {
+                    val gradientRaw = it.getString(5)
+                    val gradientList = if (!gradientRaw.isNullOrBlank()) {
+                        try {
+                            json.decodeFromString<List<String>>(gradientRaw)
+                        } catch (e: Exception) {
+                            emptyList()
+                        }
+                    } else emptyList()
+
+                    list.add(
+                        StatusItem(
+                            id = it.getString(0),
+                            userId = it.getString(1),
+                            userName = it.getString(2),
+                            avatarUrl = it.getString(3),
+                            caption = it.getString(4),
+                            backgroundGradientHex = gradientList,
+                            timestamp = it.getLong(6),
+                            expiresAt = it.getLong(7),
+                            mediaUri = it.getString(8),
+                            isViewed = it.getInt(9) == 1
+                        )
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "loadStatuses failed: ${e.message}", e)
+        }
+        _statusesFlow.value = list
+        return list
+    }
+
+    fun markStatusViewed(statusId: String) {
+        try {
+            val db = writableDatabase
+            db.execSQL("UPDATE statuses SET is_viewed = 1 WHERE id = ?", arrayOf(statusId))
+            loadStatuses()
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "markStatusViewed failed: ${e.message}", e)
+        }
+    }
+
+    fun deleteStatus(statusId: String) {
+        try {
+            val db = writableDatabase
+            db.execSQL("DELETE FROM statuses WHERE id = ?", arrayOf(statusId))
+            loadStatuses()
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "deleteStatus failed: ${e.message}", e)
+        }
     }
 
     fun wipeAllData() {
@@ -740,6 +966,7 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
             db.execSQL("DELETE FROM vault_items")
             db.execSQL("DELETE FROM calls")
             db.execSQL("DELETE FROM ratchet_sessions")
+            db.execSQL("DELETE FROM statuses")
             reloadAll()
         } catch (e: Exception) {
             android.util.Log.e("ArgusLocalStore", "wipeAllData failed: ${e.message}", e)

@@ -1,5 +1,6 @@
 package com.example.argus.data.repository
 
+import android.util.Log
 import com.example.argus.crypto.keys.ArgusKeyPair
 import com.example.argus.crypto.ratchet.DoubleRatchetSession
 import com.example.argus.crypto.ratchet.RatchetWireMessage
@@ -14,10 +15,12 @@ import com.example.argus.data.remote.WebSocketInboundEvent
 import com.example.argus.data.remote.WireEncryptedPayload
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -30,8 +33,10 @@ class MessageRepository(
     private val webSocketClient: ArgusWebSocketClient,
     private val authRepository: AuthRepository
 ) {
-    private val scope = CoroutineScope(Dispatchers.IO)
+    private val TAG = "MessageRepository"
+    private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val json = Json { ignoreUnknownKeys = true }
+    private val flushMutex = Mutex()
 
     val conversations: StateFlow<List<Conversation>> = localStore.conversationsFlow
     val messages: StateFlow<Map<String, List<Message>>> = localStore.messagesFlow
@@ -40,6 +45,15 @@ class MessageRepository(
     val typingState: StateFlow<Map<String, Boolean>> = _typingStateFlow.asStateFlow()
 
     init {
+        // Auto-flush queued offline messages when WebSocket connects
+        scope.launch {
+            webSocketClient.connectionState.collect { isConnected ->
+                if (isConnected) {
+                    flushQueuedMessages()
+                }
+            }
+        }
+
         // Listen to real-time WebSocket events
         scope.launch {
             webSocketClient.inboundEvents.collect { event ->
@@ -82,7 +96,8 @@ class MessageRepository(
     private data class EncryptedResult(
         val wireMessage: RatchetWireMessage,
         val senderIdentityKey: String,
-        val ephemeralPublicKey: String?
+        val ephemeralPublicKey: String?,
+        val oneTimePreKeyId: Int?
     )
 
     suspend fun sendMessage(
@@ -107,6 +122,42 @@ class MessageRepository(
             ArgusLocalStore.getDirectConversationId(currentUserId, recipientId)
         }
 
+        var finalStatus = MessageStatus.QUEUED
+        var wirePayload: WireEncryptedPayload? = null
+
+        // Encrypt inline synchronously
+        try {
+            val encResult = encryptForRecipient(recipientId, text)
+            wirePayload = WireEncryptedPayload(
+                id = messageId,
+                conversationId = canonicalConvId,
+                senderId = currentUserId,
+                recipientId = recipientId,
+                dhPublicKeyBase64 = encResult.wireMessage.dhPublicKeyBase64,
+                sequenceNumber = encResult.wireMessage.sequenceNumber,
+                previousChainLength = encResult.wireMessage.previousChainLength,
+                ivBase64 = encResult.wireMessage.ivBase64,
+                ciphertextBase64 = encResult.wireMessage.ciphertextBase64,
+                senderIdentityPublicKeyBase64 = encResult.senderIdentityKey,
+                ephemeralPublicKeyBase64 = encResult.ephemeralPublicKey,
+                oneTimePreKeyId = encResult.oneTimePreKeyId,
+                mediaUrl = mediaUri,
+                mediaType = mediaType,
+                mediaSize = mediaSizeBytes,
+                replyToMessageId = replyToMessageId,
+                timestamp = now,
+                expiresAt = expiresAt
+            )
+
+            val sent = webSocketClient.sendEncryptedMessage(wirePayload)
+            finalStatus = if (sent) MessageStatus.SENT else MessageStatus.QUEUED
+        } catch (e: Exception) {
+            Log.e(TAG, "Encryption or direct transport failed, queueing message for auto-retry", e)
+            finalStatus = MessageStatus.QUEUED
+        }
+
+        val wirePayloadJson = wirePayload?.let { json.encodeToString(it) }
+
         val localMessage = Message(
             id = messageId,
             conversationId = canonicalConvId,
@@ -116,26 +167,56 @@ class MessageRepository(
             mediaUri = mediaUri,
             mediaType = mediaType,
             mediaSizeBytes = mediaSizeBytes,
-            status = MessageStatus.SENDING,
+            status = finalStatus,
             timestamp = now,
             replyToMessageId = replyToMessageId,
             replyToSnippet = replyToSnippet,
             expiresAt = expiresAt,
-            isEncrypted = true
+            isEncrypted = true,
+            wirePayloadJson = wirePayloadJson
         )
 
-        localStore.saveMessage(localMessage)
+        localStore.saveMessage(localMessage, currentUserId)
+        return localMessage
+    }
 
-        // Perform Signal Double Ratchet Encryption
+    fun flushQueuedMessages() {
         scope.launch {
+            if (!flushMutex.tryLock()) return@launch
             try {
-                val encResult = encryptForRecipient(recipientId, text)
+                val queued = localStore.loadQueuedMessages()
+                if (queued.isEmpty()) return@launch
+                Log.d(TAG, "Flushing ${queued.size} queued offline messages sequentially")
+                for (msg in queued) {
+                    try {
+                        val success = retryMessage(msg)
+                        if (!success && !webSocketClient.connectionState.value) {
+                            Log.w(TAG, "Stopping flush because transport disconnected during retry of ${msg.id}")
+                            break
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error in flushQueuedMessages for msg ${msg.id}", e)
+                    }
+                }
+            } finally {
+                flushMutex.unlock()
+            }
+        }
+    }
 
-                val wirePayload = WireEncryptedPayload(
-                    id = messageId,
-                    conversationId = canonicalConvId,
+    suspend fun retryMessage(msg: Message): Boolean {
+        return try {
+            val wirePayload: WireEncryptedPayload = if (!msg.wirePayloadJson.isNullOrBlank()) {
+                // Replay exact wire payload to preserve Double Ratchet state (C-2)
+                json.decodeFromString<WireEncryptedPayload>(msg.wirePayloadJson)
+            } else {
+                val currentUserId = preferences.loadCurrentUser()?.id ?: "me"
+                val encResult = encryptForRecipient(msg.recipientId, msg.text)
+                val payload = WireEncryptedPayload(
+                    id = msg.id,
+                    conversationId = msg.conversationId,
                     senderId = currentUserId,
-                    recipientId = recipientId,
+                    recipientId = msg.recipientId,
                     dhPublicKeyBase64 = encResult.wireMessage.dhPublicKeyBase64,
                     sequenceNumber = encResult.wireMessage.sequenceNumber,
                     previousChainLength = encResult.wireMessage.previousChainLength,
@@ -143,36 +224,46 @@ class MessageRepository(
                     ciphertextBase64 = encResult.wireMessage.ciphertextBase64,
                     senderIdentityPublicKeyBase64 = encResult.senderIdentityKey,
                     ephemeralPublicKeyBase64 = encResult.ephemeralPublicKey,
-                    mediaUrl = mediaUri,
-                    mediaType = mediaType,
-                    mediaSize = mediaSizeBytes,
-                    replyToMessageId = replyToMessageId,
-                    timestamp = now,
-                    expiresAt = expiresAt
+                    oneTimePreKeyId = encResult.oneTimePreKeyId,
+                    mediaUrl = msg.mediaUri,
+                    mediaType = msg.mediaType,
+                    mediaSize = msg.mediaSizeBytes,
+                    replyToMessageId = msg.replyToMessageId,
+                    timestamp = msg.timestamp,
+                    expiresAt = msg.expiresAt
                 )
-
-                val sent = webSocketClient.sendEncryptedMessage(wirePayload)
-                val status = if (sent) MessageStatus.SENT else MessageStatus.QUEUED
-                localStore.updateMessageStatus(messageId, status)
-            } catch (e: Exception) {
-                // If encryption fails or offline, leave in QUEUED state for auto-retry
-                localStore.updateMessageStatus(messageId, MessageStatus.QUEUED)
+                // Persist wire payload json
+                val updated = msg.copy(wirePayloadJson = json.encodeToString(payload))
+                localStore.saveMessage(updated, currentUserId)
+                payload
             }
-        }
 
-        return localMessage
+            val sent = webSocketClient.sendEncryptedMessage(wirePayload)
+            if (sent) {
+                localStore.updateMessageStatus(msg.id, MessageStatus.SENT)
+                true
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Retry failed for message ${msg.id}", e)
+            false
+        }
     }
 
     private suspend fun encryptForRecipient(recipientId: String, plaintext: String): EncryptedResult {
         val identityKey = authRepository.getOrCreateIdentityKeyPair()
         val savedSession = localStore.getRatchetSession(recipientId)
         var ephemeralKey: String? = null
+        var otpId: Int? = null
+
         val session: DoubleRatchetSession = if (savedSession != null) {
             DoubleRatchetSession.fromSerialized(savedSession)
         } else {
             // Establish new X3DH session by fetching target's PreKeyBundle
             val bundle = apiClient.fetchTargetPreKeyBundle(recipientId)
                 ?: error("Failed to fetch PreKeyBundle for recipient $recipientId")
+            otpId = bundle.oneTimePreKeyId
             val (newSession, ephemPair) = DoubleRatchetSession.initializeInitiator(identityKey, bundle)
             ephemeralKey = ephemPair.publicKeyBase64
             newSession
@@ -180,57 +271,129 @@ class MessageRepository(
 
         val wire = session.encrypt(plaintext.toByteArray(Charsets.UTF_8))
         localStore.saveRatchetSession(recipientId, session.serialize())
-        return EncryptedResult(wire, identityKey.publicKeyBase64, ephemeralKey)
+        return EncryptedResult(wire, identityKey.publicKeyBase64, ephemeralKey, otpId)
     }
 
     private suspend fun handleIncomingWireMessage(payload: WireEncryptedPayload) {
         val currentUserId = preferences.loadCurrentUser()?.id ?: "me"
         val senderId = payload.senderId
 
+        // Direct plaintext payload handling (e.g. from backend bot / unencrypted system alert)
+        if (!payload.text.isNullOrBlank() && payload.ciphertextBase64.isBlank()) {
+            saveAndAckIncomingMessage(payload, payload.text, currentUserId)
+            return
+        }
+
         // Decrypt using recipient DoubleRatchetSession
-        val decryptedText = try {
+        var decryptedText: String? = null
+
+        try {
             val savedSession = localStore.getRatchetSession(senderId)
-            val session: DoubleRatchetSession = if (savedSession != null) {
-                DoubleRatchetSession.fromSerialized(savedSession)
-            } else {
+            val session: DoubleRatchetSession? = if (savedSession != null) {
+                try {
+                    DoubleRatchetSession.fromSerialized(savedSession)
+                } catch (e: Exception) {
+                    localStore.deleteRatchetSession(senderId)
+                    null
+                }
+            } else null
+
+            val activeSession = session ?: run {
                 val myIdentity = authRepository.getOrCreateIdentityKeyPair()
-                val mySignedPreKey = json.decodeFromString<ArgusKeyPair>(
-                    preferences.getSignedPreKeyPairJson() ?: error("Missing signed prekey")
-                )
+                val mySignedPreKey = authRepository.getOrCreateSignedPreKeyPair()
                 val senderIdentity = payload.senderIdentityPublicKeyBase64
                     ?: localStore.loadContacts().firstOrNull { it.userId == senderId }?.identityKeyBase64
                     ?: payload.dhPublicKeyBase64
                 val senderEphemeral = payload.ephemeralPublicKeyBase64 ?: payload.dhPublicKeyBase64
 
+                // Retrieve and consume Bob's local OTP private key matching Alice's requested oneTimePreKeyId
+                val otpKeyPair = payload.oneTimePreKeyId?.let { authRepository.getAndConsumeOneTimePreKey(it) }
+
                 DoubleRatchetSession.initializeReceiver(
                     bobIdentityKeyPair = myIdentity,
                     bobSignedPreKeyPair = mySignedPreKey,
-                    bobOneTimePreKeyPair = null,
+                    bobOneTimePreKeyPair = otpKeyPair,
                     aliceIdentityPublicKeyBase64 = senderIdentity,
                     aliceEphemeralPublicKeyBase64 = senderEphemeral,
                     aliceInitialDhRatchetPublicKeyBase64 = payload.dhPublicKeyBase64
                 )
             }
 
-            val wireMsg = RatchetWireMessage(
-                dhPublicKeyBase64 = payload.dhPublicKeyBase64,
-                sequenceNumber = payload.sequenceNumber,
-                previousChainLength = payload.previousChainLength,
-                ivBase64 = payload.ivBase64,
-                ciphertextBase64 = payload.ciphertextBase64
-            )
-            val decryptedBytes = session.decrypt(wireMsg)
-            localStore.saveRatchetSession(senderId, session.serialize())
-            String(decryptedBytes, Charsets.UTF_8)
+            if (payload.ciphertextBase64.isNotBlank() && payload.ivBase64.isNotBlank()) {
+                try {
+                    val wireMsg = RatchetWireMessage(
+                        dhPublicKeyBase64 = payload.dhPublicKeyBase64,
+                        sequenceNumber = payload.sequenceNumber,
+                        previousChainLength = payload.previousChainLength,
+                        ivBase64 = payload.ivBase64,
+                        ciphertextBase64 = payload.ciphertextBase64
+                    )
+                    val decryptedBytes = activeSession.decrypt(wireMsg)
+                    localStore.saveRatchetSession(senderId, activeSession.serialize())
+                    decryptedText = String(decryptedBytes, Charsets.UTF_8)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Decryption with existing ratchet session failed, attempting fresh X3DH receiver init", e)
+                    // If session was desynchronized and Alice included initial ephemeral keys, attempt fresh X3DH
+                    if (payload.ephemeralPublicKeyBase64 != null && payload.senderIdentityPublicKeyBase64 != null) {
+                        try {
+                            val myIdentity = authRepository.getOrCreateIdentityKeyPair()
+                            val mySignedPreKey = authRepository.getOrCreateSignedPreKeyPair()
+                            val otpKeyPair = payload.oneTimePreKeyId?.let { authRepository.getAndConsumeOneTimePreKey(it) }
+
+                            val freshSession = DoubleRatchetSession.initializeReceiver(
+                                bobIdentityKeyPair = myIdentity,
+                                bobSignedPreKeyPair = mySignedPreKey,
+                                bobOneTimePreKeyPair = otpKeyPair,
+                                aliceIdentityPublicKeyBase64 = payload.senderIdentityPublicKeyBase64,
+                                aliceEphemeralPublicKeyBase64 = payload.ephemeralPublicKeyBase64,
+                                aliceInitialDhRatchetPublicKeyBase64 = payload.dhPublicKeyBase64
+                            )
+                            val wireMsg = RatchetWireMessage(
+                                dhPublicKeyBase64 = payload.dhPublicKeyBase64,
+                                sequenceNumber = payload.sequenceNumber,
+                                previousChainLength = payload.previousChainLength,
+                                ivBase64 = payload.ivBase64,
+                                ciphertextBase64 = payload.ciphertextBase64
+                            )
+                            val decryptedBytes = freshSession.decrypt(wireMsg)
+                            localStore.saveRatchetSession(senderId, freshSession.serialize())
+                            decryptedText = String(decryptedBytes, Charsets.UTF_8)
+                        } catch (freshEx: Exception) {
+                            Log.e(TAG, "Fresh X3DH receiver init also failed", freshEx)
+                        }
+                    }
+                }
+            }
         } catch (e: Exception) {
-            android.util.Log.e("MessageRepository", "Decryption failed, fallback message", e)
-            "[Encrypted Signal Payload]"
+            Log.e(TAG, "Decryption pipeline failed for message ${payload.id}", e)
         }
 
+        // Graceful fallback for plaintext / simple payload
+        if (decryptedText == null) {
+            decryptedText = if (!payload.text.isNullOrBlank()) {
+                payload.text
+            } else {
+                try {
+                    val rawDecoded = String(com.example.argus.core.common.Base64Compat.decode(payload.ciphertextBase64), Charsets.UTF_8)
+                    if (rawDecoded.all { it.isLetterOrDigit() || it.isWhitespace() || "!@#$%^&*()_+-=[]{}|;':\",./<>?~`".contains(it) }) {
+                        rawDecoded
+                    } else {
+                        "[Encrypted Signal Payload]"
+                    }
+                } catch (e: Exception) {
+                    "[Encrypted Signal Payload]"
+                }
+            }
+        }
+
+        saveAndAckIncomingMessage(payload, decryptedText, currentUserId)
+    }
+
+    private fun saveAndAckIncomingMessage(payload: WireEncryptedPayload, text: String, currentUserId: String) {
         val canonicalConvId = if (payload.conversationId.startsWith("group_")) {
             payload.conversationId
         } else {
-            ArgusLocalStore.getDirectConversationId(senderId, currentUserId)
+            ArgusLocalStore.getDirectConversationId(payload.senderId, currentUserId)
         }
 
         val message = Message(
@@ -238,7 +401,7 @@ class MessageRepository(
             conversationId = canonicalConvId,
             senderId = payload.senderId,
             recipientId = currentUserId,
-            text = decryptedText,
+            text = text,
             mediaUri = payload.mediaUrl,
             mediaType = payload.mediaType,
             mediaSizeBytes = payload.mediaSize ?: 0L,
@@ -246,10 +409,11 @@ class MessageRepository(
             timestamp = payload.timestamp,
             replyToMessageId = payload.replyToMessageId,
             expiresAt = payload.expiresAt,
-            isEncrypted = true
+            isEncrypted = true,
+            wirePayloadJson = json.encodeToString(payload)
         )
 
-        localStore.saveMessage(message)
+        localStore.saveMessage(message, currentUserId)
         webSocketClient.sendDeliveryAck(payload.id, payload.senderId)
     }
 
@@ -260,6 +424,7 @@ class MessageRepository(
             localStore.updateMessageStatus(it.id, MessageStatus.READ)
             webSocketClient.sendReadAck(it.id, senderId)
         }
+        localStore.resetUnreadCount(conversationId)
     }
 
     fun addReaction(message: Message, emoji: String) {
@@ -271,7 +436,7 @@ class MessageRepository(
             updatedReactions[emoji] = currentUserId
         }
         val updated = message.copy(reactions = updatedReactions)
-        localStore.saveMessage(updated)
+        localStore.saveMessage(updated, currentUserId)
     }
 
     fun sendTyping(recipientId: String, conversationId: String, isTyping: Boolean) {

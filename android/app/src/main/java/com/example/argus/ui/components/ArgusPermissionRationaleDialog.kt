@@ -34,6 +34,7 @@ fun ArgusPermissionRationaleDialog(
         ArgusPermissionType.STORAGE_AND_MEDIA -> Icons.Default.FolderSpecial
         ArgusPermissionType.NOTIFICATIONS -> Icons.Default.NotificationsActive
         ArgusPermissionType.CONTACTS -> Icons.Default.Contacts
+        ArgusPermissionType.LOCATION -> Icons.Default.LocationOn
     }
 
     AlertDialog(

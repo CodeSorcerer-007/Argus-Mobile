@@ -25,3 +25,11 @@ services:
         value: ./uploads
       - key: CORS_ORIGIN
         value: "*"
+      - key: RATE_LIMIT_WINDOW_MS
+        value: "60000"
+      - key: RATE_LIMIT_MAX_REQUESTS
+        value: "300"
+      - key: DATABASE_URL
+        sync: false # Set in Render dashboard to your Neon.tech connection string
+      - key: PG_SSL_REJECT_UNAUTHORIZED
+        value: "false"

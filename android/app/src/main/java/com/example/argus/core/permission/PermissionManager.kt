@@ -38,6 +38,11 @@ enum class ArgusPermissionType(
         "Private Contact Discovery",
         "Used strictly for zero-knowledge salted SHA-256 matching with your address book. Plaintext numbers are never uploaded to the server.",
         "Contacts"
+    ),
+    LOCATION(
+        "Precise GPS Location",
+        "Required to share your live GPS location pin securely with end-to-end encryption in chat.",
+        "Location"
     )
 }
 
@@ -106,12 +111,22 @@ object PermissionManager {
 
     fun getContactPermissions(): Array<String> = arrayOf(Manifest.permission.READ_CONTACTS)
 
+    fun getLocationPermissions(): Array<String> = arrayOf(
+        Manifest.permission.ACCESS_FINE_LOCATION,
+        Manifest.permission.ACCESS_COARSE_LOCATION
+    )
+
     // Permission Verification Checks
 
     fun hasPermissions(context: Context, permissions: Array<String>): Boolean {
         return permissions.all {
             ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
         }
+    }
+
+    fun hasLocationPermission(context: Context): Boolean {
+        return ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+               ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
     }
 
     fun hasCameraPermission(context: Context): Boolean {
@@ -131,6 +146,8 @@ object PermissionManager {
             ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
         }
     }
+
+    fun hasStoragePermission(context: Context): Boolean = hasStorageOrMediaPermissions(context)
 
     fun hasNotificationPermission(context: Context): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {

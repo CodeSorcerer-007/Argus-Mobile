@@ -2,16 +2,42 @@ package com.example.argus.data.local
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
+import com.example.argus.crypto.keys.ArgusKeyPair
+import com.example.argus.crypto.keys.OneTimePreKey
+import com.example.argus.crypto.vault.AndroidKeystoreProvider
 import com.example.argus.data.model.User
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.util.UUID
 
 class ArgusPreferences(context: Context) {
-    private val prefs: SharedPreferences = context.getSharedPreferences("argus_secure_prefs", Context.MODE_PRIVATE)
     private val json = Json { ignoreUnknownKeys = true }
+
+    var isUsingEncryptedPrefs: Boolean = true
+        private set
+
+    private val prefs: SharedPreferences = try {
+        val masterKey = MasterKey.Builder(context)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        EncryptedSharedPreferences.create(
+            context,
+            "argus_encrypted_prefs",
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        ).also { isUsingEncryptedPrefs = true }
+    } catch (e: Throwable) {
+        Log.e("ArgusPreferences", "EncryptedSharedPreferences initialization failed, falling back to standard prefs", e)
+        isUsingEncryptedPrefs = false
+        context.getSharedPreferences("argus_secure_prefs", Context.MODE_PRIVATE)
+    }
 
     private val _currentUserFlow = MutableStateFlow<User?>(loadCurrentUser())
     val currentUserFlow: StateFlow<User?> = _currentUserFlow.asStateFlow()
@@ -27,8 +53,21 @@ class ArgusPreferences(context: Context) {
         prefs.edit().putString("auth_token", token).apply()
     }
 
-    fun getDeviceId(): String? {
-        return prefs.getString("device_id", null)
+    fun getRefreshToken(): String? {
+        return prefs.getString("refresh_token", null)
+    }
+
+    fun setRefreshToken(refreshToken: String?) {
+        prefs.edit().putString("refresh_token", refreshToken).apply()
+    }
+
+    fun getDeviceId(): String {
+        var deviceId = prefs.getString("device_id", null)
+        if (deviceId.isNullOrBlank()) {
+            deviceId = "android_${UUID.randomUUID()}"
+            setDeviceId(deviceId)
+        }
+        return deviceId
     }
 
     fun setDeviceId(deviceId: String) {
@@ -101,6 +140,54 @@ class ArgusPreferences(context: Context) {
         prefs.edit().putString("signed_pre_key_pair", jsonStr).apply()
     }
 
+    fun getLastSignedPreKeyRotation(): Long = prefs.getLong("last_signed_prekey_rotation", 0L)
+    fun setLastSignedPreKeyRotation(timestamp: Long) {
+        prefs.edit().putLong("last_signed_prekey_rotation", timestamp).apply()
+    }
+
+    // --- One-Time PreKey Management for X3DH ---
+
+    fun saveOneTimePreKeys(keys: List<OneTimePreKey>) {
+        try {
+            val encoded = json.encodeToString(keys)
+            prefs.edit().putString("one_time_pre_keys", encoded).apply()
+        } catch (e: Exception) {
+            Log.e("ArgusPreferences", "Failed to save one-time prekeys", e)
+        }
+    }
+
+    fun getOneTimePreKeys(): List<OneTimePreKey> {
+        val raw = prefs.getString("one_time_pre_keys", null) ?: return emptyList()
+        return try {
+            json.decodeFromString<List<OneTimePreKey>>(raw)
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    fun getAndConsumeOneTimePreKey(keyId: Int): ArgusKeyPair? {
+        val currentKeys = getOneTimePreKeys().toMutableList()
+        val targetIdx = currentKeys.indexOfFirst { it.keyId == keyId && !it.isUsed }
+        if (targetIdx != -1) {
+            val matched = currentKeys[targetIdx]
+            currentKeys[targetIdx] = matched.copy(isUsed = true)
+            saveOneTimePreKeys(currentKeys)
+            return matched.keyPair
+        }
+        return null
+    }
+
+    fun getPhoneSalt(): String {
+        var salt = prefs.getString("argus_phone_salt", null)
+        if (salt == null) {
+            val randomBytes = ByteArray(16)
+            java.security.SecureRandom().nextBytes(randomBytes)
+            salt = com.example.argus.core.common.Base64Compat.encodeToString(randomBytes)
+            prefs.edit().putString("argus_phone_salt", salt).apply()
+        }
+        return salt
+    }
+
     fun getEmergencyRecoveryKey(): String? = prefs.getString("emergency_recovery_key", null)
     fun setEmergencyRecoveryKey(key: String?) {
         if (key == null) {
@@ -138,6 +225,7 @@ class ArgusPreferences(context: Context) {
 
     fun clearAll() {
         prefs.edit().clear().apply()
+        AndroidKeystoreProvider.deleteKeys()
         _currentUserFlow.value = null
         _isAppLockedFlow.value = false
     }

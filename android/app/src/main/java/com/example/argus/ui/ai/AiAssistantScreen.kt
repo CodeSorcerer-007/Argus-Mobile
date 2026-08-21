@@ -79,7 +79,7 @@ fun AiAssistantScreen(
             }
 
             // Feature Navigation Tabs
-            TabRow(
+            PrimaryTabRow(
                 selectedTabIndex = selectedTab,
                 containerColor = ObsidianCard,
                 contentColor = EmeraldPrimary,

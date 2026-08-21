@@ -39,7 +39,7 @@ class VaultRepository(
     }
 
     fun decryptNote(item: VaultItem): String {
-        val parts = item.contentOrPath.split(":")
+        val parts = item.contentOrPath.split(":", limit = 2)
         if (parts.size != 2) return item.contentOrPath
         val iv = parts[0]
         val ciphertext = parts[1]

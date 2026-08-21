@@ -103,7 +103,8 @@ data class Message(
     val reactions: Map<String, String> = emptyMap(), // emoji -> userId
     val isEdited: Boolean = false,
     val expiresAt: Long? = null,
-    val isEncrypted: Boolean = true
+    val isEncrypted: Boolean = true,
+    val wirePayloadJson: String? = null
 )
 
 @Serializable
@@ -129,4 +130,18 @@ data class CallRecord(
     val status: CallStatus,
     val durationSec: Int = 0,
     val timestamp: Long = System.currentTimeMillis()
+)
+
+@Serializable
+data class StatusItem(
+    val id: String,
+    val userId: String,
+    val userName: String,
+    val avatarUrl: String? = null,
+    val caption: String,
+    val backgroundGradientHex: List<String> = emptyList(),
+    val timestamp: Long = System.currentTimeMillis(),
+    val expiresAt: Long = System.currentTimeMillis() + (24 * 60 * 60 * 1000L),
+    val isViewed: Boolean = false,
+    val mediaUri: String? = null
 )

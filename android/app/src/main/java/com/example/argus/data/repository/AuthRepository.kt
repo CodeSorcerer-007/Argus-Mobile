@@ -2,6 +2,7 @@ package com.example.argus.data.repository
 
 import android.os.Build
 import com.example.argus.crypto.keys.ArgusKeyPair
+import com.example.argus.crypto.keys.OneTimePreKey
 import com.example.argus.crypto.ratchet.Curve25519Engine
 import com.example.argus.data.local.ArgusLocalStore
 import com.example.argus.data.local.ArgusPreferences
@@ -16,7 +17,7 @@ import kotlinx.serialization.json.Json
 
 class AuthRepository(
     private val preferences: ArgusPreferences,
-    private val localStore: ArgusLocalStore,
+    val localStore: ArgusLocalStore,
     private val apiClient: ArgusApiClient,
     private val webSocketClient: ArgusWebSocketClient
 ) {
@@ -43,12 +44,15 @@ class AuthRepository(
 
             if (response.success && response.user != null && response.token != null) {
                 preferences.setAuthToken(response.token)
+                if (response.refreshToken != null) {
+                    preferences.setRefreshToken(response.refreshToken)
+                }
                 preferences.saveCurrentUser(response.user)
                 if (response.recoveryKey != null) {
                     preferences.setEmergencyRecoveryKey(response.recoveryKey)
                 }
 
-                // Publish initial PreKey bundle to server for X3DH session establishment
+                // Publish initial PreKey bundle to server for X3DH session establishment & persist private keys
                 publishInitialPreKeys(identityKeyPair)
 
                 // Connect WebSocket
@@ -77,9 +81,12 @@ class AuthRepository(
 
             if (response.success && response.user != null && response.token != null) {
                 preferences.setAuthToken(response.token)
+                if (response.refreshToken != null) {
+                    preferences.setRefreshToken(response.refreshToken)
+                }
                 preferences.saveCurrentUser(response.user)
 
-                // Refresh PreKeys upon login
+                // Refresh PreKeys upon login & persist private keys
                 publishInitialPreKeys(identityKeyPair)
 
                 // Connect WebSocket
@@ -122,12 +129,15 @@ class AuthRepository(
 
             if (response.success && response.user != null && response.token != null) {
                 preferences.setAuthToken(response.token)
+                if (response.refreshToken != null) {
+                    preferences.setRefreshToken(response.refreshToken)
+                }
                 preferences.saveCurrentUser(response.user)
                 if (response.recoveryKey != null) {
                     preferences.setEmergencyRecoveryKey(response.recoveryKey)
                 }
 
-                // Re-publish PreKeys with new session
+                // Re-publish PreKeys with new session & persist private keys
                 publishInitialPreKeys(identityKeyPair)
 
                 // Connect WebSocket
@@ -160,12 +170,21 @@ class AuthRepository(
         )
         val sigBase64 = com.example.argus.core.common.Base64Compat.encodeToString(sig)
 
-        // Generate pool of 20 One-Time PreKeys
-        val oneTimeKeys = (1..20).map { id ->
+        // Generate pool of 20 One-Time PreKeys and PERSIST private keys locally
+        val oneTimeKeyPairs = (1..20).map { id ->
             val pair = Curve25519Engine.generateX25519KeyPair()
-            OneTimeKeyItem(
+            OneTimePreKey(
                 keyId = id,
-                publicKeyBase64 = pair.publicKeyBase64
+                keyPair = pair,
+                isUsed = false
+            )
+        }
+        preferences.saveOneTimePreKeys(oneTimeKeyPairs)
+
+        val oneTimeKeyItems = oneTimeKeyPairs.map {
+            OneTimeKeyItem(
+                keyId = it.keyId,
+                publicKeyBase64 = it.keyPair.publicKeyBase64
             )
         }
 
@@ -174,10 +193,46 @@ class AuthRepository(
             signedPreKeyId = 1,
             signedPreKeyPublicBase64 = signedPreKeyPair.publicKeyBase64,
             signedPreKeySignatureBase64 = sigBase64,
-            oneTimePreKeys = oneTimeKeys
+            oneTimePreKeys = oneTimeKeyItems
         )
 
-        apiClient.publishPreKeyBundle(payload)
+        val published = apiClient.publishPreKeyBundle(payload)
+        if (published) {
+            preferences.setLastSignedPreKeyRotation(System.currentTimeMillis())
+        }
+    }
+
+    suspend fun checkAndEnsurePreKeysPublished() {
+        if (!isLoggedIn()) return
+        val signedPreKeyJson = preferences.getSignedPreKeyPairJson()
+        val oneTimeKeys = preferences.getOneTimePreKeys()
+        if (signedPreKeyJson == null || oneTimeKeys.isEmpty()) {
+            try {
+                val identityKeyPair = getOrCreateIdentityKeyPair()
+                publishInitialPreKeys(identityKeyPair)
+            } catch (e: Exception) {
+                android.util.Log.w("AuthRepository", "Failed to publish initial prekeys on startup", e)
+            }
+        } else {
+            checkAndRotatePreKeysIfNeeded()
+        }
+    }
+
+    suspend fun checkAndRotatePreKeysIfNeeded() {
+        val lastRotation = preferences.getLastSignedPreKeyRotation()
+        val sevenDaysMs = 7L * 24 * 60 * 60 * 1000L
+        if (System.currentTimeMillis() - lastRotation > sevenDaysMs) {
+            try {
+                val identityKeyPair = getOrCreateIdentityKeyPair()
+                publishInitialPreKeys(identityKeyPair)
+            } catch (e: Exception) {
+                android.util.Log.w("AuthRepository", "Periodic PreKey rotation error", e)
+            }
+        }
+    }
+
+    fun getAndConsumeOneTimePreKey(keyId: Int): ArgusKeyPair? {
+        return preferences.getAndConsumeOneTimePreKey(keyId)
     }
 
     fun getOrCreateIdentityKeyPair(): ArgusKeyPair {
@@ -189,14 +244,29 @@ class AuthRepository(
                 // fall through to regenerate
             }
         }
-        val newPair = Curve25519Engine.generateEd25519KeyPair()
+        val newPair = Curve25519Engine.generateX25519KeyPair()
         preferences.setIdentityKeyPairJson(json.encodeToString(newPair))
         return newPair
     }
 
+    fun getOrCreateSignedPreKeyPair(): ArgusKeyPair {
+        val saved = preferences.getSignedPreKeyPairJson()
+        if (saved != null) {
+            try {
+                return json.decodeFromString<ArgusKeyPair>(saved)
+            } catch (e: Exception) {
+                // fall through to regenerate
+            }
+        }
+        val newPair = Curve25519Engine.generateX25519KeyPair()
+        preferences.setSignedPreKeyPairJson(json.encodeToString(newPair))
+        return newPair
+    }
+
     fun hashPhoneNumber(phone: String): String {
+        val salt = preferences.getPhoneSalt()
         val bytes = java.security.MessageDigest.getInstance("SHA-256")
-            .digest("Argus_Salt_2026:${phone.trim()}".toByteArray(Charsets.UTF_8))
+            .digest("Argus_PhoneSalt:$salt:${phone.trim()}".toByteArray(Charsets.UTF_8))
         return bytes.joinToString("") { "%02x".format(it) }
     }
 

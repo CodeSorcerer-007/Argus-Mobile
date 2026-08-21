@@ -8,17 +8,17 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
-import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -30,25 +30,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.ui.input.key.*
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.argus.core.location.ArgusLocationProvider
+import com.example.argus.core.media.ArgusAudioRecorder
 import com.example.argus.core.permission.ArgusPermissionType
 import com.example.argus.core.permission.PermissionManager
 import com.example.argus.data.model.Conversation
 import com.example.argus.data.model.Message
-import com.example.argus.data.model.MessageStatus
 import com.example.argus.data.repository.AiAssistantRepository
-import com.example.argus.data.repository.SmartContextItem
 import com.example.argus.theme.*
 import com.example.argus.ui.components.ArgusAvatar
 import com.example.argus.ui.components.ArgusPermissionRationaleDialog
@@ -56,10 +51,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import kotlin.random.Random
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -72,7 +63,7 @@ fun ChatScreen(
     onVideoCallClick: () -> Unit,
     onVerifySecurityClick: () -> Unit,
     onReactionClick: (Message, String) -> Unit,
-    onContactInfoClick: () -> Unit = onVerifySecurityClick,
+    onContactInfoClick: () -> Unit,
     isPeerTyping: Boolean = false,
     onTyping: (Boolean) -> Unit = {},
     aiRepository: AiAssistantRepository
@@ -82,15 +73,21 @@ fun ChatScreen(
     var showAttachmentMenu by remember { mutableStateOf(false) }
     var isRecordingVoice by remember { mutableStateOf(false) }
     var recordingDurationSec by remember { mutableStateOf(0) }
+    var voiceOutputFile by remember { mutableStateOf<File?>(null) }
     var selectedDisappearingDuration by remember { mutableStateOf<Int?>(conversation.disappearingDurationSec) }
     var showOptionsMenu by remember { mutableStateOf(false) }
     var showDisappearingDialog by remember { mutableStateOf(false) }
     var fullScreenPhotoUrl by remember { mutableStateOf<String?>(null) }
     var activeRationalePermission by remember { mutableStateOf<ArgusPermissionType?>(null) }
 
+    var showContactShareDialog by remember { mutableStateOf(false) }
+    var showPollDialog by remember { mutableStateOf(false) }
+    var showVaultSecretDialog by remember { mutableStateOf(false) }
+
     val listState = rememberLazyListState()
-    val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val audioRecorder = remember { ArgusAudioRecorder(context) }
 
     // Smart Back Button Handler (dismiss sheets/dialogs before exiting)
     BackHandler {
@@ -102,6 +99,12 @@ fun ChatScreen(
             showAttachmentMenu = false
         } else if (showDisappearingDialog) {
             showDisappearingDialog = false
+        } else if (showContactShareDialog) {
+            showContactShareDialog = false
+        } else if (showPollDialog) {
+            showPollDialog = false
+        } else if (showVaultSecretDialog) {
+            showVaultSecretDialog = false
         } else if (replyingToMessage != null) {
             replyingToMessage = null
         } else {
@@ -152,18 +155,28 @@ fun ChatScreen(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
-            val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
-            onSendMessage("🖼️ Encrypted Image", uri.toString(), "PHOTO", expiresAt)
-            Toast.makeText(context, "Encrypted image sent!", Toast.LENGTH_SHORT).show()
+            try {
+                val destFile = File(context.cacheDir, "argus_gallery_${System.currentTimeMillis()}.jpg")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    FileOutputStream(destFile).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
+                onSendMessage("🖼️ Encrypted Image", destFile.absolutePath, "PHOTO", expiresAt)
+                Toast.makeText(context, "Image selected and sent securely!", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(context, "File copy error: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
-    // Media & Storage Permission Launcher for Gallery
+    // Storage / Media Permission Launcher
     val mediaPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
-        val granted = grants.values.any { it }
-        if (granted || PermissionManager.hasStorageOrMediaPermissions(context)) {
+        val granted = grants.values.any { it } || PermissionManager.hasStoragePermission(context)
+        if (granted) {
             galleryLauncher.launch("image/*")
         } else {
             activeRationalePermission = ArgusPermissionType.STORAGE_AND_MEDIA
@@ -171,26 +184,36 @@ fun ChatScreen(
     }
 
     fun launchGalleryPicker() {
-        if (PermissionManager.hasStorageOrMediaPermissions(context)) {
+        if (PermissionManager.hasStoragePermission(context)) {
             galleryLauncher.launch("image/*")
         } else {
             mediaPermissionLauncher.launch(PermissionManager.getStorageAndMediaPermissions())
         }
     }
 
-    // Native Document Picker
+    // Native Document / File Picker
     val documentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
-            val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
-            onSendMessage("📄 Encrypted Document", uri.toString(), "DOCUMENT", expiresAt)
-            Toast.makeText(context, "Encrypted document sent!", Toast.LENGTH_SHORT).show()
+            try {
+                val destFile = File(context.cacheDir, "argus_doc_${System.currentTimeMillis()}.dat")
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    FileOutputStream(destFile).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
+                onSendMessage("📄 Encrypted Document", destFile.absolutePath, "DOCUMENT", expiresAt)
+                Toast.makeText(context, "Document encrypted and sent!", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(context, "File error: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
     fun launchDocumentPicker() {
-        if (PermissionManager.hasStorageOrMediaPermissions(context)) {
+        if (PermissionManager.hasStoragePermission(context)) {
             documentLauncher.launch("*/*")
         } else {
             mediaPermissionLauncher.launch(PermissionManager.getStorageAndMediaPermissions())
@@ -202,7 +225,11 @@ fun ChatScreen(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            isRecordingVoice = true
+            val file = File(context.cacheDir, "argus_voice_${System.currentTimeMillis()}.m4a")
+            voiceOutputFile = file
+            if (audioRecorder.startRecording(file)) {
+                isRecordingVoice = true
+            }
         } else {
             activeRationalePermission = ArgusPermissionType.AUDIO
         }
@@ -210,9 +237,55 @@ fun ChatScreen(
 
     fun triggerVoiceRecord() {
         if (PermissionManager.hasAudioPermission(context)) {
-            isRecordingVoice = true
+            val file = File(context.cacheDir, "argus_voice_${System.currentTimeMillis()}.m4a")
+            voiceOutputFile = file
+            if (audioRecorder.startRecording(file)) {
+                isRecordingVoice = true
+            } else {
+                Toast.makeText(context, "Could not start audio recorder", Toast.LENGTH_SHORT).show()
+            }
         } else {
             audioPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    // GPS Location Permission Launcher
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { grants ->
+        val granted = grants.values.any { it } || PermissionManager.hasLocationPermission(context)
+        if (granted) {
+            coroutineScope.launch {
+                Toast.makeText(context, "Acquiring secure GPS location...", Toast.LENGTH_SHORT).show()
+                val loc = ArgusLocationProvider.getCurrentLocation(context)
+                if (loc != null) {
+                    val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
+                    onSendMessage(loc.displayText, loc.mapUrl, "LOCATION", expiresAt)
+                    Toast.makeText(context, "GPS Location pin encrypted and sent!", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "Could not acquire GPS location. Please check GPS settings.", Toast.LENGTH_SHORT).show()
+                }
+            }
+        } else {
+            activeRationalePermission = ArgusPermissionType.LOCATION
+        }
+    }
+
+    fun triggerLocationSharing() {
+        if (PermissionManager.hasLocationPermission(context)) {
+            coroutineScope.launch {
+                Toast.makeText(context, "Acquiring secure GPS location...", Toast.LENGTH_SHORT).show()
+                val loc = ArgusLocationProvider.getCurrentLocation(context)
+                if (loc != null) {
+                    val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
+                    onSendMessage(loc.displayText, loc.mapUrl, "LOCATION", expiresAt)
+                    Toast.makeText(context, "GPS Location pin encrypted and sent!", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "Could not acquire GPS location. Please check GPS settings.", Toast.LENGTH_SHORT).show()
+                }
+            }
+        } else {
+            locationPermissionLauncher.launch(PermissionManager.getLocationPermissions())
         }
     }
 
@@ -258,15 +331,6 @@ fun ChatScreen(
         }
     }
 
-    // Generic Notification & Contacts Permission Launchers
-    val notificationPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { }
-
-    val contactsPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { }
-
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
             listState.animateScrollToItem(messages.size - 1)
@@ -283,10 +347,11 @@ fun ChatScreen(
         }
     }
 
+    // Debounced Typing Indicator (M-7)
     LaunchedEffect(inputText) {
         if (inputText.isNotBlank()) {
             onTyping(true)
-            delay(3000)
+            delay(2500)
             onTyping(false)
         } else {
             onTyping(false)
@@ -314,12 +379,8 @@ fun ChatScreen(
                     ArgusPermissionType.CAMERA -> cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
                     ArgusPermissionType.AUDIO -> audioPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
                     ArgusPermissionType.STORAGE_AND_MEDIA -> mediaPermissionLauncher.launch(PermissionManager.getStorageAndMediaPermissions())
-                    ArgusPermissionType.NOTIFICATIONS -> {
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                            notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
-                        }
-                    }
-                    ArgusPermissionType.CONTACTS -> contactsPermissionLauncher.launch(android.Manifest.permission.READ_CONTACTS)
+                    ArgusPermissionType.LOCATION -> locationPermissionLauncher.launch(PermissionManager.getLocationPermissions())
+                    else -> {}
                 }
             },
             onDismiss = { activeRationalePermission = null },
@@ -335,7 +396,7 @@ fun ChatScreen(
         DisappearingMessagesDialog(
             currentDuration = selectedDisappearingDuration,
             onDismiss = { showDisappearingDialog = false },
-            onDurationSelected = { duration ->
+            onDurationSelected = { duration: Int? ->
                 selectedDisappearingDuration = duration
                 showDisappearingDialog = false
                 Toast.makeText(context, "Disappearing messages timer updated", Toast.LENGTH_SHORT).show()
@@ -351,6 +412,255 @@ fun ChatScreen(
             onSaveToVault = {
                 Toast.makeText(context, "Encrypted image saved to Argus Vault!", Toast.LENGTH_SHORT).show()
                 fullScreenPhotoUrl = null
+            }
+        )
+    }
+
+    // Interactive Contact Card Share Dialog
+    if (showContactShareDialog) {
+        var contactName by remember { mutableStateOf("") }
+        var contactPhone by remember { mutableStateOf("") }
+        var contactRole by remember { mutableStateOf("") }
+
+        AlertDialog(
+            onDismissRequest = { showContactShareDialog = false },
+            containerColor = ObsidianCard,
+            shape = RoundedCornerShape(20.dp),
+            title = {
+                Text("Share Contact Card", color = TextPrimary, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = contactName,
+                        onValueChange = { contactName = it },
+                        label = { Text("Contact Name") },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = EmeraldPrimary,
+                            unfocusedBorderColor = ObsidianBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = contactPhone,
+                        onValueChange = { contactPhone = it },
+                        label = { Text("Phone Number or Username") },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = EmeraldPrimary,
+                            unfocusedBorderColor = ObsidianBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = contactRole,
+                        onValueChange = { contactRole = it },
+                        label = { Text("Organization / Role (Optional)") },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = EmeraldPrimary,
+                            unfocusedBorderColor = ObsidianBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (contactName.isNotBlank()) {
+                            val roleSuffix = if (contactRole.isNotBlank()) " • $contactRole" else ""
+                            val phoneStr = if (contactPhone.isNotBlank()) " ($contactPhone)" else ""
+                            val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
+                            onSendMessage("👤 Contact Card: ${contactName.trim()}$phoneStr$roleSuffix", null, null, expiresAt)
+                            showContactShareDialog = false
+                            Toast.makeText(context, "Contact card sent encrypted!", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary)
+                ) {
+                    Text("Share Contact", color = TextOnEmerald)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showContactShareDialog = false }) {
+                    Text("Cancel", color = TextSecondary)
+                }
+            }
+        )
+    }
+
+    // Interactive Poll Creator Dialog
+    if (showPollDialog) {
+        var pollQuestion by remember { mutableStateOf("") }
+        var opt1 by remember { mutableStateOf("") }
+        var opt2 by remember { mutableStateOf("") }
+        var opt3 by remember { mutableStateOf("") }
+
+        AlertDialog(
+            onDismissRequest = { showPollDialog = false },
+            containerColor = ObsidianCard,
+            shape = RoundedCornerShape(20.dp),
+            title = {
+                Text("Create Encrypted Poll", color = TextPrimary, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = pollQuestion,
+                        onValueChange = { pollQuestion = it },
+                        label = { Text("Question") },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = EmeraldPrimary,
+                            unfocusedBorderColor = ObsidianBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = opt1,
+                        onValueChange = { opt1 = it },
+                        label = { Text("Option 1") },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = EmeraldPrimary,
+                            unfocusedBorderColor = ObsidianBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = opt2,
+                        onValueChange = { opt2 = it },
+                        label = { Text("Option 2") },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = EmeraldPrimary,
+                            unfocusedBorderColor = ObsidianBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = opt3,
+                        onValueChange = { opt3 = it },
+                        label = { Text("Option 3 (Optional)") },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = EmeraldPrimary,
+                            unfocusedBorderColor = ObsidianBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (pollQuestion.isNotBlank() && opt1.isNotBlank() && opt2.isNotBlank()) {
+                            val opt3Str = if (opt3.isNotBlank()) "\n3. ${opt3.trim()}" else ""
+                            val pollPayload = "📊 Poll: ${pollQuestion.trim()}\n1. ${opt1.trim()}\n2. ${opt2.trim()}$opt3Str"
+                            val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
+                            onSendMessage(pollPayload, null, null, expiresAt)
+                            showPollDialog = false
+                            Toast.makeText(context, "Encrypted poll shared with chat!", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "Please enter question and at least 2 options", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary)
+                ) {
+                    Text("Send Poll", color = TextOnEmerald)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPollDialog = false }) {
+                    Text("Cancel", color = TextSecondary)
+                }
+            }
+        )
+    }
+
+    // Interactive Hardware Vault Secret Note Dialog
+    if (showVaultSecretDialog) {
+        var secretTitle by remember { mutableStateOf("") }
+        var secretContent by remember { mutableStateOf("") }
+
+        AlertDialog(
+            onDismissRequest = { showVaultSecretDialog = false },
+            containerColor = ObsidianCard,
+            shape = RoundedCornerShape(20.dp),
+            title = {
+                Text("Share Vault Secret Note", color = TextPrimary, fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Encrypted with AES-256-GCM Double Ratchet. Accessible only by peer.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = EmeraldLight
+                    )
+                    OutlinedTextField(
+                        value = secretTitle,
+                        onValueChange = { secretTitle = it },
+                        label = { Text("Note Title") },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = EmeraldPrimary,
+                            unfocusedBorderColor = ObsidianBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = secretContent,
+                        onValueChange = { secretContent = it },
+                        label = { Text("Secret Content (Passwords, Keys, Seeds)") },
+                        maxLines = 4,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = EmeraldPrimary,
+                            unfocusedBorderColor = ObsidianBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (secretContent.isNotBlank()) {
+                            val titleStr = if (secretTitle.isNotBlank()) "[${secretTitle.trim()}]\n" else ""
+                            val payload = "🔒 Hardware-Locked Vault Note:\n$titleStr${secretContent.trim()}"
+                            val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
+                            onSendMessage(payload, null, null, expiresAt)
+                            showVaultSecretDialog = false
+                            Toast.makeText(context, "Encrypted vault note transmitted!", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldPrimary)
+                ) {
+                    Text("Transmit Secret", color = TextOnEmerald)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showVaultSecretDialog = false }) {
+                    Text("Cancel", color = TextSecondary)
+                }
             }
         )
     }
@@ -394,7 +704,7 @@ fun ChatScreen(
                     ) {
                         ArgusAvatar(name = conversation.title, size = 40.dp)
                         Spacer(modifier = Modifier.width(10.dp))
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = conversation.title,
                                 style = MaterialTheme.typography.titleMedium,
@@ -409,6 +719,16 @@ fun ChatScreen(
                                 fontWeight = if (isPeerTyping) FontWeight.Bold else FontWeight.Normal
                             )
                         }
+                    }
+
+                    // Direct Security Verification Icon (M-8)
+                    IconButton(onClick = onVerifySecurityClick) {
+                        Icon(
+                            imageVector = Icons.Default.EnhancedEncryption,
+                            contentDescription = "Verify Security",
+                            tint = EmeraldPrimary,
+                            modifier = Modifier.size(22.dp)
+                        )
                     }
 
                     IconButton(onClick = { triggerVideoCall() }) {
@@ -541,10 +861,9 @@ fun ChatScreen(
                                 showAttachmentMenu = false
                                 launchGalleryPicker()
                             }
-                            AttachmentGridItem(icon = Icons.Default.Headphones, label = "Audio", color = Color(0xFFFF9800)) {
+                            AttachmentGridItem(icon = Icons.Default.Headphones, label = "Audio Note", color = Color(0xFFFF9800)) {
                                 showAttachmentMenu = false
-                                val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
-                                onSendMessage("🎵 Secure Audio Note", "AUDIO", "https://argus.sec/audio.aac", expiresAt)
+                                triggerVoiceRecord()
                             }
                         }
 
@@ -556,23 +875,19 @@ fun ChatScreen(
                         ) {
                             AttachmentGridItem(icon = Icons.Default.LocationOn, label = "Location", color = Color(0xFF00C853)) {
                                 showAttachmentMenu = false
-                                val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
-                                onSendMessage("📍 Encrypted GPS Pin: 37.7749° N, 122.4194° W", "LOCATION", null, expiresAt)
+                                triggerLocationSharing()
                             }
                             AttachmentGridItem(icon = Icons.Default.Person, label = "Contact", color = Color(0xFF00B0FF)) {
                                 showAttachmentMenu = false
-                                val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
-                                onSendMessage("👤 Contact Card: Argus Core Admin (+1 555-0199)", null, null, expiresAt)
+                                showContactShareDialog = true
                             }
                             AttachmentGridItem(icon = Icons.Default.Poll, label = "Poll", color = Color(0xFFFFD600)) {
                                 showAttachmentMenu = false
-                                val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
-                                onSendMessage("📊 Poll: Enable Post-Quantum Kyber1024?\n1. Yes (Recommended)\n2. Postpone", null, null, expiresAt)
+                                showPollDialog = true
                             }
                             AttachmentGridItem(icon = Icons.Default.FolderSpecial, label = "Vault Secret", color = Color(0xFF00E599)) {
                                 showAttachmentMenu = false
-                                val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
-                                onSendMessage("🔒 Hardware-Locked Vault Note (AES-256-GCM)", null, null, expiresAt)
+                                showVaultSecretDialog = true
                             }
                         }
                     }
@@ -580,7 +895,7 @@ fun ChatScreen(
 
                 // Dynamic Input Composer Bar
                 if (isRecordingVoice) {
-                    // Active Voice Recording Bar
+                    // Active Hardware Voice Recording Bar
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -605,14 +920,23 @@ fun ChatScreen(
                         }
 
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            TextButton(onClick = { isRecordingVoice = false }) {
+                            TextButton(onClick = {
+                                audioRecorder.cancelRecording()
+                                isRecordingVoice = false
+                            }) {
                                 Text("Cancel", color = Color(0xFFFF6B6B))
                             }
                             Spacer(modifier = Modifier.width(8.dp))
                             IconButton(
                                 onClick = {
-                                    val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
-                                    onSendMessage("🎤 Voice Note (${recordingDurationSec}s)", "AUDIO", "https://argus.sec/voice_${System.currentTimeMillis()}.aac", expiresAt)
+                                    val durationMs = audioRecorder.stopRecording()
+                                    val durationSec = maxOf((durationMs / 1000).toInt(), 1)
+                                    val file = voiceOutputFile
+                                    if (file != null && file.exists() && file.length() > 0) {
+                                        val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
+                                        onSendMessage("🎤 Voice Note (${durationSec}s)", file.absolutePath, "AUDIO", expiresAt)
+                                        Toast.makeText(context, "Encrypted voice note sent!", Toast.LENGTH_SHORT).show()
+                                    }
                                     isRecordingVoice = false
                                 },
                                 modifier = Modifier

@@ -51,7 +51,9 @@ fun ArgusTheme(
             if (activity != null) {
                 try {
                     val window = activity.window
+                    @Suppress("DEPRECATION")
                     window.statusBarColor = ObsidianBlack.toArgb()
+                    @Suppress("DEPRECATION")
                     window.navigationBarColor = ObsidianBlack.toArgb()
                     val insetsController = WindowCompat.getInsetsController(window, view)
                     insetsController.isAppearanceLightStatusBars = false

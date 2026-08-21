@@ -6,7 +6,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -230,8 +229,6 @@ fun ArgusNavGraph(
                         )
                         currentScreen = Screen.Call
                     },
-                    onVaultClick = { currentScreen = Screen.Vault },
-                    onShieldClick = { currentScreen = Screen.Shield },
                     onSettingsClick = { currentScreen = Screen.Settings },
                     onAiAssistantClick = { currentScreen = Screen.AiAssistant },
                     onViewStatus = { status -> currentScreen = Screen.StatusViewer(status) }
@@ -298,7 +295,7 @@ fun ArgusNavGraph(
                         currentScreen = Screen.SecurityVerify(
                             peerName = screen.contact.displayName,
                             peerUserId = screen.contact.userId,
-                            peerIdentityKey = screen.contact.identityKeyBase64 ?: "",
+                            peerIdentityKey = screen.contact.identityKeyBase64,
                             isVerified = screen.contact.isVerified
                         )
                     }
@@ -494,6 +491,9 @@ fun ArgusNavGraph(
                 SettingsScreen(
                     preferences = container.preferences,
                     authRepository = container.authRepository,
+                    onVaultClick = { currentScreen = Screen.Vault },
+                    onShieldClick = { currentScreen = Screen.Shield },
+                    onAiAssistantClick = { currentScreen = Screen.AiAssistant },
                     onBackClick = { currentScreen = Screen.Main },
                     onLogoutClick = {
                         container.authRepository.logout()

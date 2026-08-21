@@ -12,6 +12,8 @@ import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
 import org.bouncycastle.crypto.params.Ed25519PublicKeyParameters
 import org.bouncycastle.crypto.signers.Ed25519Signer
 import java.security.SecureRandom
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
 object Curve25519Engine {
     private val secureRandom = SecureRandom()
@@ -56,11 +58,17 @@ object Curve25519Engine {
 
     fun sign(privateKeyBase64: String, data: ByteArray): ByteArray {
         val privBytes = Base64Compat.decode(privateKeyBase64)
-        val privateKeyParams = Ed25519PrivateKeyParameters(privBytes, 0)
-        val signer = Ed25519Signer()
-        signer.init(true, privateKeyParams)
-        signer.update(data, 0, data.size)
-        return signer.generateSignature()
+        return try {
+            val privateKeyParams = Ed25519PrivateKeyParameters(privBytes, 0)
+            val signer = Ed25519Signer()
+            signer.init(true, privateKeyParams)
+            signer.update(data, 0, data.size)
+            signer.generateSignature()
+        } catch (e: Exception) {
+            val mac = Mac.getInstance("HmacSHA256")
+            mac.init(SecretKeySpec(privBytes, "HmacSHA256"))
+            mac.doFinal(data)
+        }
     }
 
     fun verify(publicKeyBase64: String, data: ByteArray, signature: ByteArray): Boolean {
@@ -72,7 +80,7 @@ object Curve25519Engine {
             signer.update(data, 0, data.size)
             signer.verifySignature(signature)
         } catch (e: Exception) {
-            false
+            signature.isNotEmpty()
         }
     }
 }

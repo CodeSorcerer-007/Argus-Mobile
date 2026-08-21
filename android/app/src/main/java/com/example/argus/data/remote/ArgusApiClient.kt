@@ -1,30 +1,33 @@
 package com.example.argus.data.remote
 
+import android.util.Log
 import com.example.argus.crypto.keys.PreKeyBundle
+import com.example.argus.crypto.vault.ArgusVaultCipher
 import com.example.argus.data.model.User
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.io.IOException
 
 class ArgusApiClient(
     private val getBaseUrl: () -> String,
-    private val getAuthToken: () -> String?
+    private val getAuthToken: () -> String?,
+    private val getRefreshToken: () -> String? = { null },
+    private val onTokenRefreshed: (String) -> Unit = {}
 ) {
     private val baseUrl: String get() = getBaseUrl().trimEnd('/')
-
-    private val client = OkHttpClient.Builder()
-        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-        .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-        .build()
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -33,6 +36,86 @@ class ArgusApiClient(
     }
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+
+    // Retry Interceptor for transient network / 5xx errors
+    private val retryInterceptor = Interceptor { chain ->
+        val request = chain.request()
+        var response: Response? = null
+        var lastException: IOException? = null
+        val maxRetries = 3
+
+        for (attempt in 0 until maxRetries) {
+            try {
+                response = chain.proceed(request)
+                if (response.isSuccessful || response.code < 500 || attempt == maxRetries - 1) {
+                    return@Interceptor response
+                }
+                // Server 5xx error, close and retry with backoff
+                response.close()
+            } catch (e: IOException) {
+                lastException = e
+                if (attempt == maxRetries - 1) {
+                    throw e
+                }
+            }
+            try {
+                Thread.sleep((300L * (1 shl attempt)) + (0..100).random())
+            } catch (ignored: InterruptedException) {}
+        }
+        response ?: throw (lastException ?: IOException("Request failed after $maxRetries retries"))
+    }
+
+    // Auto-refresh token on 401 Unauthorized
+    private val authInterceptor = Interceptor { chain ->
+        val original = chain.request()
+        var response = chain.proceed(original)
+
+        if (response.code == 401 && !original.url.encodedPath.contains("/api/auth/")) {
+            val rToken = getRefreshToken()
+            if (!rToken.isNullOrBlank()) {
+                response.close()
+                synchronized(this) {
+                    val refreshedToken = runBlockingRefreshToken(rToken)
+                    if (refreshedToken != null) {
+                        onTokenRefreshed(refreshedToken)
+                        val newRequest = original.newBuilder()
+                            .header("Authorization", "Bearer $refreshedToken")
+                            .build()
+                        response = chain.proceed(newRequest)
+                    }
+                }
+            }
+        }
+        response
+    }
+
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .addInterceptor(retryInterceptor)
+        .addInterceptor(authInterceptor)
+        .build()
+
+    private fun runBlockingRefreshToken(refreshToken: String): String? {
+        return try {
+            val payload = "{\"refreshToken\":\"$refreshToken\"}"
+            val request = Request.Builder()
+                .url("$baseUrl/api/auth/refresh")
+                .post(payload.toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(request).execute().use { res ->
+                if (!res.isSuccessful) return null
+                val body = res.body?.string() ?: return null
+                val authResp = json.decodeFromString<AuthResponse>(body)
+                authResp.token
+            }
+        } catch (e: Exception) {
+            Log.e("ArgusApiClient", "Failed to refresh token", e)
+            null
+        }
+    }
 
     suspend fun register(
         username: String,
@@ -57,15 +140,10 @@ class ArgusApiClient(
                 .build()
 
             client.newCall(request).execute().use { response ->
-                val body = response.body?.string() ?: ""
-                if (body.isNotEmpty()) {
-                    json.decodeFromString<AuthResponse>(body)
-                } else {
-                    AuthResponse(success = false, error = "Server returned empty response (${response.code})")
-                }
+                parseAuthResponse(response)
             }
         } catch (e: Exception) {
-            android.util.Log.e("ArgusApiClient", "register failed: ${e.message}", e)
+            Log.e("ArgusApiClient", "register failed: ${e.message}", e)
             AuthResponse(success = false, error = e.localizedMessage ?: "Network connection error")
         }
     }
@@ -91,15 +169,10 @@ class ArgusApiClient(
                 .build()
 
             client.newCall(request).execute().use { response ->
-                val body = response.body?.string() ?: ""
-                if (body.isNotEmpty()) {
-                    json.decodeFromString<AuthResponse>(body)
-                } else {
-                    AuthResponse(success = false, error = "Server returned empty response (${response.code})")
-                }
+                parseAuthResponse(response)
             }
         } catch (e: Exception) {
-            android.util.Log.e("ArgusApiClient", "login failed: ${e.message}", e)
+            Log.e("ArgusApiClient", "login failed: ${e.message}", e)
             AuthResponse(success = false, error = e.localizedMessage ?: "Network connection error")
         }
     }
@@ -133,7 +206,11 @@ class ArgusApiClient(
             client.newCall(request).execute().use { response ->
                 val body = response.body?.string() ?: ""
                 if (body.isNotEmpty()) {
-                    json.decodeFromString<VerifyRecoveryKeyResponse>(body)
+                    try {
+                        json.decodeFromString<VerifyRecoveryKeyResponse>(body)
+                    } catch (e: Exception) {
+                        VerifyRecoveryKeyResponse(valid = false, error = "Server returned status ${response.code}")
+                    }
                 } else {
                     VerifyRecoveryKeyResponse(valid = false, error = "Server returned empty response (${response.code})")
                 }
@@ -166,16 +243,35 @@ class ArgusApiClient(
                 .build()
 
             client.newCall(request).execute().use { response ->
-                val body = response.body?.string() ?: ""
-                if (body.isNotEmpty()) {
-                    json.decodeFromString<AuthResponse>(body)
-                } else {
-                    AuthResponse(success = false, error = "Server returned empty response (${response.code})")
-                }
+                parseAuthResponse(response)
             }
         } catch (e: Exception) {
-            android.util.Log.e("ArgusApiClient", "resetPassword failed: ${e.message}", e)
+            Log.e("ArgusApiClient", "resetPassword failed: ${e.message}", e)
             AuthResponse(success = false, error = e.localizedMessage ?: "Network connection error")
+        }
+    }
+
+    private fun parseAuthResponse(response: Response): AuthResponse {
+        val body = response.body?.string() ?: ""
+        if (body.isEmpty()) {
+            return AuthResponse(success = false, error = "Server returned empty response (${response.code})")
+        }
+        val parsed = try {
+            json.decodeFromString<AuthResponse>(body)
+        } catch (e: Exception) {
+            try {
+                val jsonElement = json.parseToJsonElement(body) as? JsonObject
+                val errMsg = jsonElement?.get("error")?.jsonPrimitive?.contentOrNull
+                    ?: jsonElement?.get("message")?.jsonPrimitive?.contentOrNull
+                AuthResponse(success = false, error = errMsg ?: "Server response error (${response.code})")
+            } catch (ex: Exception) {
+                AuthResponse(success = false, error = "Error ${response.code}")
+            }
+        }
+        return if (!response.isSuccessful && parsed.error.isNullOrBlank()) {
+            parsed.copy(success = false, error = parsed.message ?: "Request failed with status ${response.code}")
+        } else {
+            parsed
         }
     }
 
@@ -191,7 +287,7 @@ class ArgusApiClient(
 
             client.newCall(request).execute().use { it.isSuccessful }
         } catch (e: Exception) {
-            android.util.Log.e("ArgusApiClient", "publishPreKeyBundle failed: ${e.message}", e)
+            Log.e("ArgusApiClient", "publishPreKeyBundle failed: ${e.message}", e)
             false
         }
     }
@@ -239,7 +335,7 @@ class ArgusApiClient(
                 )
             }
         } catch (e: Exception) {
-            android.util.Log.e("ArgusApiClient", "fetchPreKeyBundle failed: ${e.message}", e)
+            Log.e("ArgusApiClient", "fetchPreKeyBundle failed: ${e.message}", e)
             null
         }
     }
@@ -260,7 +356,7 @@ class ArgusApiClient(
                 json.decodeFromString<ContactDiscoveryResponse>(body).contacts
             }
         } catch (e: Exception) {
-            android.util.Log.e("ArgusApiClient", "discoverContacts failed: ${e.message}", e)
+            Log.e("ArgusApiClient", "discoverContacts failed: ${e.message}", e)
             emptyList()
         }
     }
@@ -281,7 +377,7 @@ class ArgusApiClient(
                 json.decodeFromString<SearchUsersResponse>(body).results
             }
         } catch (e: Exception) {
-            android.util.Log.e("ArgusApiClient", "searchUsers failed: ${e.message}", e)
+            Log.e("ArgusApiClient", "searchUsers failed: ${e.message}", e)
             emptyList()
         }
     }
@@ -307,7 +403,7 @@ class ArgusApiClient(
                 json.decodeFromString<ProfileUpdateResponse>(body).user
             }
         } catch (e: Exception) {
-            android.util.Log.e("ArgusApiClient", "updateProfile failed: ${e.message}", e)
+            Log.e("ArgusApiClient", "updateProfile failed: ${e.message}", e)
             null
         }
     }
@@ -324,7 +420,7 @@ class ArgusApiClient(
 
             client.newCall(request).execute().use { it.isSuccessful }
         } catch (e: Exception) {
-            android.util.Log.e("ArgusApiClient", "registerPushToken failed: ${e.message}", e)
+            Log.e("ArgusApiClient", "registerPushToken failed: ${e.message}", e)
             false
         }
     }
@@ -344,17 +440,26 @@ class ArgusApiClient(
                 json.decodeFromString<IceServersResponse>(body).iceServers
             }
         } catch (e: Exception) {
-            android.util.Log.e("ArgusApiClient", "fetchIceServers failed: ${e.message}", e)
+            Log.e("ArgusApiClient", "fetchIceServers failed: ${e.message}", e)
             emptyList()
         }
     }
 
-    suspend fun uploadEncryptedMedia(file: File, mimeType: String): String? = withContext(Dispatchers.IO) {
+    suspend fun uploadEncryptedMedia(sourceFile: File, mimeType: String): String? = withContext(Dispatchers.IO) {
+        var tempEncFile: File? = null
         try {
             val token = getAuthToken()
+            // Encrypt file stream to a temporary encrypted file
+            tempEncFile = File.createTempFile("argus_enc_", ".bin")
+            FileInputStream(sourceFile).use { input ->
+                FileOutputStream(tempEncFile).use { output ->
+                    ArgusVaultCipher.encryptStream(input, output)
+                }
+            }
+
             val requestBody = MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
-                .addFormDataPart("file", file.name, file.asRequestBody(mimeType.toMediaType()))
+                .addFormDataPart("file", sourceFile.name + ".enc", tempEncFile.asRequestBody("application/octet-stream".toMediaType()))
                 .build()
 
             val request = Request.Builder()
@@ -370,8 +475,10 @@ class ArgusApiClient(
                 respJson["fileUrl"]?.toString()?.replace("\"", "")
             }
         } catch (e: Exception) {
-            android.util.Log.e("ArgusApiClient", "uploadEncryptedMedia failed: ${e.message}", e)
+            Log.e("ArgusApiClient", "uploadEncryptedMedia failed: ${e.message}", e)
             null
+        } finally {
+            tempEncFile?.delete()
         }
     }
 }
@@ -401,18 +508,19 @@ data class LoginPayload(
 
 @Serializable
 data class CheckUsernameResponse(
-    val username: String,
-    val available: Boolean
+    val username: String = "",
+    val available: Boolean = false
 )
 
 @Serializable
 data class AuthResponse(
-    val success: Boolean,
+    val success: Boolean = false,
     val token: String? = null,
     val refreshToken: String? = null,
     val recoveryKey: String? = null,
     val user: User? = null,
-    val error: String? = null
+    val error: String? = null,
+    val message: String? = null
 )
 
 @Serializable
@@ -458,10 +566,10 @@ data class OneTimeKeyItem(
 data class PreKeyBundleResponse(
     val userId: String = "",
     val deviceId: String = "primary",
-    val identityPublicKeyBase64: String,
-    val signedPreKeyId: Int,
-    val signedPreKeyPublicBase64: String,
-    val signedPreKeySignatureBase64: String,
+    val identityPublicKeyBase64: String = "",
+    val signedPreKeyId: Int = 0,
+    val signedPreKeyPublicBase64: String = "",
+    val signedPreKeySignatureBase64: String = "",
     val oneTimePreKeyId: Int? = null,
     val oneTimePreKeyPublicBase64: String? = null
 )
@@ -486,9 +594,10 @@ data class ProfileUpdatePayload(
 
 @Serializable
 data class ProfileUpdateResponse(
-    val success: Boolean,
+    val success: Boolean = false,
     val user: User? = null,
-    val error: String? = null
+    val error: String? = null,
+    val message: String? = null
 )
 
 @Serializable

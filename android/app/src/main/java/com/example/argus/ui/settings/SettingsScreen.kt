@@ -38,6 +38,9 @@ import kotlinx.coroutines.launch
 fun SettingsScreen(
     preferences: ArgusPreferences,
     authRepository: AuthRepository,
+    onVaultClick: () -> Unit,
+    onShieldClick: () -> Unit,
+    onAiAssistantClick: () -> Unit,
     onBackClick: () -> Unit,
     onLogoutClick: () -> Unit
 ) {
@@ -275,6 +278,27 @@ fun SettingsScreen(
                     Icon(imageVector = Icons.Default.QrCode, contentDescription = "My QR Code", tint = EmeraldPrimary, modifier = Modifier.size(22.dp))
                 }
             }
+
+            // 🛡️ Security & Intelligence Section
+            SettingsSectionHeader("Security & Intelligence")
+            SettingsClickableRow(
+                icon = Icons.Default.Shield,
+                title = "Argus Privacy Shield",
+                subtitle = "Live security score, key audits & threat analysis",
+                onClick = onShieldClick
+            )
+            SettingsClickableRow(
+                icon = Icons.Default.FolderSpecial,
+                title = "Hardware-Backed Vault",
+                subtitle = "Keystore AES-256 encrypted secret notes & files",
+                onClick = onVaultClick
+            )
+            SettingsClickableRow(
+                icon = Icons.Default.AutoAwesome,
+                title = "On-Device AI Engine",
+                subtitle = "Neural translation, transcription & smart context",
+                onClick = onAiAssistantClick
+            )
 
             // 🔑 Account Section
             SettingsSectionHeader("Account")

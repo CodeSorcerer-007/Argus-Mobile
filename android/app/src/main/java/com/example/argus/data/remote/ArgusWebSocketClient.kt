@@ -23,18 +23,20 @@ data class WireEncryptedPayload(
     val conversationId: String,
     val senderId: String,
     val recipientId: String,
-    val dhPublicKeyBase64: String,
-    val sequenceNumber: Int,
-    val previousChainLength: Int,
-    val ivBase64: String,
-    val ciphertextBase64: String,
+    val dhPublicKeyBase64: String = "",
+    val sequenceNumber: Int = 0,
+    val previousChainLength: Int = 0,
+    val ivBase64: String = "",
+    val ciphertextBase64: String = "",
+    val text: String? = null,
     val senderIdentityPublicKeyBase64: String? = null,
     val ephemeralPublicKeyBase64: String? = null,
+    val oneTimePreKeyId: Int? = null,
     val mediaUrl: String? = null,
     val mediaType: String? = null,
     val mediaSize: Long? = null,
     val replyToMessageId: String? = null,
-    val timestamp: Long,
+    val timestamp: Long = System.currentTimeMillis(),
     val expiresAt: Long? = null,
     val status: String = "SENT"
 )
@@ -81,7 +83,7 @@ sealed interface WebSocketInboundEvent {
 class ArgusWebSocketClient(
     private val getWsUrl: () -> String = { "wss://argus-backend-5cg3.onrender.com/ws" },
     private val getAuthToken: () -> String?,
-    private val getDeviceId: () -> String?
+    private val getDeviceId: () -> String
 ) {
     private val TAG = "ArgusWS"
     private val client = OkHttpClient.Builder()
@@ -107,6 +109,7 @@ class ArgusWebSocketClient(
     private var shouldReconnect = true
     private var reconnectAttempt = 0
     private var reconnectJob: kotlinx.coroutines.Job? = null
+    private val MAX_RECONNECT_ATTEMPTS = 10
 
     fun connect() {
         val token = getAuthToken() ?: return
@@ -121,7 +124,7 @@ class ArgusWebSocketClient(
                 reconnectAttempt = 0
                 reconnectJob?.cancel()
                 val authPayload = json.encodeToString(
-                    AuthEvent(token = token, deviceId = getDeviceId() ?: "android_1")
+                    AuthEvent(token = token, deviceId = getDeviceId())
                 )
                 webSocket.send(authPayload)
             }
@@ -132,6 +135,7 @@ class ArgusWebSocketClient(
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                 _connectionState.value = false
+                scheduleReconnect()
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
@@ -149,6 +153,10 @@ class ArgusWebSocketClient(
 
     private fun scheduleReconnect() {
         if (!shouldReconnect) return
+        if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+            Log.w(TAG, "Max reconnect attempts ($MAX_RECONNECT_ATTEMPTS) reached, waiting for user trigger")
+            return
+        }
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
             val backoffMs = (1000L * (1 shl minOf(reconnectAttempt, 5))) + (0..1000).random()
@@ -159,6 +167,11 @@ class ArgusWebSocketClient(
                 connect()
             }
         }
+    }
+
+    fun retryConnection() {
+        reconnectAttempt = 0
+        connect()
     }
 
     fun disconnect() {

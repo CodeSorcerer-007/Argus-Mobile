@@ -7,14 +7,17 @@ import com.example.argus.data.local.ArgusPreferences
 import com.example.argus.data.remote.ArgusApiClient
 import com.example.argus.data.remote.ArgusWebSocketClient
 import com.example.argus.data.repository.*
+import kotlinx.coroutines.*
 
 class AppContainer(private val context: Context) {
     val preferences = ArgusPreferences(context)
     val localStore = ArgusLocalStore(context)
 
-    val apiClient = ArgusApiClient(
+    val apiClient: ArgusApiClient = ArgusApiClient(
         getBaseUrl = { preferences.getServerUrl() },
-        getAuthToken = { preferences.getAuthToken() }
+        getAuthToken = { preferences.getAuthToken() },
+        getRefreshToken = { preferences.getRefreshToken() },
+        onTokenRefreshed = { preferences.setAuthToken(it) }
     )
 
     val webSocketClient = ArgusWebSocketClient(
@@ -39,8 +42,10 @@ class AppContainer(private val context: Context) {
     )
 
     val callRepository = CallRepository(
+        context = context,
         localStore = localStore,
-        webSocketClient = webSocketClient
+        webSocketClient = webSocketClient,
+        apiClient = apiClient
     )
 
     val shieldRepository = ShieldRepository(preferences, localStore)
@@ -72,6 +77,13 @@ class ArgusApplication : Application() {
         try {
             if (container.authRepository.isLoggedIn()) {
                 container.webSocketClient.connect()
+                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+                    try {
+                        container.authRepository.checkAndEnsurePreKeysPublished()
+                    } catch (e: Throwable) {
+                        android.util.Log.w("ArgusApplication", "PreKey check failed on startup", e)
+                    }
+                }
             }
         } catch (e: Throwable) {
             android.util.Log.e("ArgusApplication", "Startup WebSocket connect error", e)

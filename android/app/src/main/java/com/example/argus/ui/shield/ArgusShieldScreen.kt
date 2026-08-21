@@ -81,6 +81,7 @@ fun ArgusShieldScreen(
                     ArgusPermissionType.STORAGE_AND_MEDIA -> requestPermissionsLauncher.launch(PermissionManager.getStorageAndMediaPermissions())
                     ArgusPermissionType.NOTIFICATIONS -> requestPermissionsLauncher.launch(PermissionManager.getNotificationPermissions())
                     ArgusPermissionType.CONTACTS -> requestPermissionsLauncher.launch(arrayOf(android.Manifest.permission.READ_CONTACTS))
+                    ArgusPermissionType.LOCATION -> requestPermissionsLauncher.launch(PermissionManager.getLocationPermissions())
                 }
             },
             onDismiss = { activeRationalePermission = null },
@@ -233,6 +234,13 @@ fun ArgusShieldScreen(
                     isGranted = PermissionManager.hasNotificationPermission(context),
                     icon = Icons.Default.NotificationsActive,
                     onRequest = { activeRationalePermission = ArgusPermissionType.NOTIFICATIONS }
+                )
+                PermissionAuditCard(
+                    title = "GPS Location Pin",
+                    desc = "For secure live location pin sharing in chat",
+                    isGranted = PermissionManager.hasLocationPermission(context),
+                    icon = Icons.Default.LocationOn,
+                    onRequest = { activeRationalePermission = ArgusPermissionType.LOCATION }
                 )
             }
 

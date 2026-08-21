@@ -10,6 +10,7 @@
   [![Android](https://img.shields.io/badge/Android-API%2026--36-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://developer.android.com/)
   [![Node.js](https://img.shields.io/badge/Node.js-v20+-339933?style=for-the-badge&logo=nodedotjs&logoColor=white)](https://nodejs.org/)
   [![TypeScript](https://img.shields.io/badge/TypeScript-5.3-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+  [![PostgreSQL / Neon.tech](https://img.shields.io/badge/Database-Neon.tech%20%2F%20Postgres-336791?style=for-the-badge&logo=postgresql&logoColor=white)](https://neon.tech/)
   [![Tests](https://img.shields.io/badge/Tests-100%25%20Passing-10B981?style=for-the-badge&logo=jest&logoColor=white)](https://jestjs.io/)
   [![License: MIT](https://img.shields.io/badge/License-MIT-F59E0B?style=for-the-badge)](LICENSE)
 
@@ -22,6 +23,7 @@
     <a href="#-system-architecture">Architecture</a> •
     <a href="#-cryptographic-specification">Cryptography</a> •
     <a href="#-feature-matrix">Comparison</a> •
+    <a href="#-cloud-deployment-render--neontech">Cloud Deployment</a> •
     <a href="#-quick-start-guide">Quick Start</a> •
     <a href="#-security--threat-model">Threat Model</a>
   </p>
@@ -36,36 +38,36 @@
     <td width="50%">
       <h3>🔐 Signal Double Ratchet E2EE</h3>
       <ul>
-        <li><strong>X3DH Handshake</strong> with 4-DH Pre-Key bundle exchange.</li>
-        <li><strong>Per-message symmetric/asymmetric ratchets</strong> for forward & post-compromise secrecy.</li>
-        <li>Out-of-order <strong>skipped message key buffer</strong> (up to 2,000 keys).</li>
-        <li><strong>60-digit iterated SHA-512 Safety Numbers</strong> + QR code verification.</li>
+        <li><strong>X3DH Handshake</strong> with 4-DH Pre-Key bundle exchange (Curve25519 X25519).</li>
+        <li><strong>Per-message symmetric/asymmetric ratchets</strong> (AES-256-GCM + HKDF).</li>
+        <li><strong>Pre-encrypted offline queue</strong> with non-advancing ratchet replay.</li>
+        <li><strong>60-digit Safety Numbers</strong> & live QR code verification.</li>
       </ul>
     </td>
     <td width="50%">
       <h3>💬 Flagship Chat Experience</h3>
       <ul>
         <li><strong>Instant messaging</strong> with live status ticks (Queued, Sent, Delivered, Read).</li>
-        <li><strong>Voice notes</strong> with 20-bar animated waveform visualizer & scrubbing.</li>
-        <li><strong>Rich media transfer</strong> (Photos, Videos, Audio, PDF, APK, Documents).</li>
-        <li><strong>Disappearing messages</strong> (24h, 7d, 90d timers) & emoji reactions.</li>
+        <li><strong>Hardware Voice Notes</strong>: Android <code>MediaRecorder</code> AAC 44.1 kHz encoding.</li>
+        <li><strong>Rich Interactive Attachments</strong>: Documents, Camera, Gallery, Audio, GPS Pins, Contact Cards, Polls, and Vault Secret Notes.</li>
+        <li><strong>Disappearing Messages</strong> with automated background TTL purging.</li>
       </ul>
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <h3>🛡️ Argus Shield</h3>
+      <h3>📱 Persistent Stories & Statuses</h3>
       <ul>
-        <li><strong>Real-time Privacy Score meter</strong> (0–100) analyzing device exposure.</li>
-        <li><strong>Hardware Keystore check</strong> & active device session audit.</li>
-        <li><strong>Cryptographic Panic Wipe</strong>: One-tap hardware wipe of all local databases, ratchet states, and vaults.</li>
-        <li><strong>Incognito Keyboard & Screen Security</strong> (FLAG_SECURE protection).</li>
+        <li><strong>SQLite v6 Persistence</strong>: Stories stored with 24-hour expiration indexing.</li>
+        <li><strong>Background Expiration Sweeper</strong>: Auto-purges expired stories every 30s.</li>
+        <li><strong>Multi-media Stories</strong>: Custom text gradients, camera photos, and gallery images.</li>
+        <li><strong>Instagram/WhatsApp-style Story Viewer</strong> with progress bars.</li>
       </ul>
     </td>
     <td width="50%">
       <h3>🗄️ Biometric Argus Vault</h3>
       <ul>
-        <li><strong>Hardware-encrypted local vault</strong> for private notes and files.</li>
+        <li><strong>Hardware-encrypted local vault</strong> for private notes, seeds, and files.</li>
         <li><strong>Android StrongBox TEE</strong> biometric key wrapping (Fingerprint / Face Unlock).</li>
         <li>Zero-cloud, zero-telemetry hardware enclave isolation.</li>
       </ul>
@@ -73,20 +75,21 @@
   </tr>
   <tr>
     <td width="50%">
-      <h3>🤖 On-Device Intelligence</h3>
+      <h3>🛡️ Argus Shield & Panic Wipe</h3>
       <ul>
-        <li><strong>100% On-device privacy-preserving AI</strong> assistant.</li>
-        <li><strong>Smart Context Chips</strong>: Detects phone numbers, links, dates, and addresses with 1-tap actions.</li>
-        <li><strong>Tone rewrites</strong> (Professional, Concise, Friendly) & conversation summarization.</li>
-        <li><strong>Multi-language offline translation</strong> (Tamil, Hindi, Spanish, French).</li>
+        <li><strong>Real-time Privacy Score meter</strong> (0–100) analyzing device exposure.</li>
+        <li><strong>Hardware Keystore audit</strong> & active session management.</li>
+        <li><strong>Cryptographic Panic Wipe</strong>: One-tap hardware destruction of all local databases and keys.</li>
+        <li><strong>Screen Security (FLAG_SECURE)</strong> & incognito keyboard protections.</li>
       </ul>
     </td>
     <td width="50%">
-      <h3>📞 WebRTC HD Calls</h3>
+      <h3>📞 WebRTC HD Audio & Video Calls</h3>
       <ul>
         <li><strong>End-to-End Encrypted Voice & Video Calling</strong>.</li>
-        <li>Peer-to-peer WebRTC mesh with dynamic ICE (STUN/TURN) traversal.</li>
-        <li>In-call controls: Front/Back camera flip, Audio route selector, and Picture-in-Picture (PiP).</li>
+        <li><strong>Hardware Audio Pipeline</strong>: Acoustic Echo Canceler (AEC) & Noise Suppressor.</li>
+        <li>Peer-to-peer WebRTC mesh with dynamic STUN/TURN traversal.</li>
+        <li>Android 12+ <code>setCommunicationDevice</code> speakerphone routing.</li>
       </ul>
     </td>
   </tr>
@@ -100,12 +103,14 @@
 |---|:---:|:---:|:---:|:---:|
 | **Default End-to-End Encryption** | ⚠️ Closed-source | ❌ Opt-in only | ✅ Open-source | **✅ Signal Double Ratchet** |
 | **Zero-Knowledge Architecture** | ❌ Metadata logged | ❌ Server-stored chats | ✅ Zero-knowledge | **✅ Full Zero-Knowledge** |
+| **Persistent 24h Stories / Status** | ✅ Proprietary | ✅ Stories | ⚠️ Basic | **✅ SQLite v6 + 24h Purge** |
 | **Biometric Local Vault** | ❌ | ❌ | ❌ | **✅ StrongBox TEE Vault** |
 | **Cryptographic Panic Wipe** | ❌ | ❌ | ❌ | **✅ 1-Tap Emergency Wipe** |
 | **Privacy Health Meter (Shield)** | ❌ | ❌ | ❌ | **✅ Argus Shield Dashboard** |
-| **On-Device Private AI Assistant** | ❌ Cloud AI | ❌ | ❌ | **✅ 100% Offline AI** |
+| **On-Device Private AI Context** | ❌ Cloud AI | ❌ | ❌ | **✅ 100% Offline Local NLP** |
+| **Interactive Polls & Vault Notes** | ⚠️ Plaintext | ⚠️ Plaintext | ❌ | **✅ Fully E2EE Interactive** |
 | **Modern Material 3 Obsidian UI** | ❌ Generic | ❌ Custom | ❌ Basic | **✅ Obsidian & Emerald Design** |
-| **WebRTC HD Voice & Video Calls** | ✅ | ✅ | ✅ | **✅ P2P Encrypted WebRTC** |
+| **WebRTC HD Voice & Video Calls** | ✅ | ✅ | ✅ | **✅ Hardware AEC + P2P Mesh** |
 | **Refresh Token Rotation (RTR)** | ⚠️ Proprietary | ⚠️ Proprietary | ✅ | **✅ Sliding-Window RTR** |
 
 ---
@@ -115,28 +120,33 @@
 ```
 Argus Ecosystem
 │
-├── android/                             # Native Android Application (Kotlin, Jetpack Compose, Material 3)
+├── android/                             # Native Android Application (Kotlin 2.0, Jetpack Compose, Material 3)
 │   ├── app/src/main/java/com/example/argus/
 │   │   ├── ArgusApplication.kt         # Dependency container & app lifecycle coordinator
 │   │   ├── MainActivity.kt             # Edge-to-edge Compose host & system UI styling
+│   │   ├── core/                       # Native OS & Hardware Providers
+│   │   │   ├── location/               # Android LocationManager GPS coordinate provider
+│   │   │   ├── media/                  # Android MediaRecorder hardware voice note engine
+│   │   │   ├── permission/             # Runtime permission manager & custom rationale dialogs
+│   │   │   └── webrtc/                 # AudioRecord, AcousticEchoCanceler, NoiseSuppressor & routing
 │   │   ├── crypto/                     # Signal Double Ratchet Engine
 │   │   │   ├── keys/                   # Curve25519, Ed25519, PreKey bundles & Safety Numbers
 │   │   │   ├── ratchet/                # DoubleRatchetSession, HKDF-SHA256, AES-GCM
 │   │   │   └── vault/                  # Biometric StrongBox TEE Vault storage engine
-│   │   ├── data/                       # Local SQLite Database, DataStore & Network clients
-│   │   │   ├── local/                  # Room/SQLite encryption, Contact sync
-│   │   │   ├── remote/                 # ArgusApiClient, WebRTC Client, FCM push handler
+│   │   ├── data/                       # Local SQLite v6 Database, DataStore & Network clients
+│   │   │   ├── local/                  # SQLite v6 schema, 24h status purge, pre-encrypted queue
+│   │   │   ├── remote/                 # ArgusApiClient, ArgusWebSocketClient, FCM push handler
 │   │   │   └── repository/             # Auth, Message, Call, Vault, Shield & AI Repositories
 │   │   ├── theme/                      # Obsidian Black & Emerald Green Material 3 Design System
 │   │   └── ui/                         # 13 Modular Jetpack Compose Feature Packages
-│   │       ├── auth/                   # Username/password authentication, emergency recovery key & biometric login
-│   │       ├── main/                   # Bottom navigation host (Chats, Status, Calls, Vault, Shield, AI)
-│   │       ├── chat/                   # WhatsApp-style chat bubbles, voice waveform player, reactions, file attachments
+│   │       ├── auth/                   # Username/password authentication, emergency recovery key & login
+│   │       ├── main/                   # Bottom navigation host (Chats, Updates/Status, Calls, Vault, Shield, AI)
+│   │       ├── chat/                   # WhatsApp-style chat bubbles, voice waveform player, interactive attachments
 │   │       ├── security/               # 60-digit Safety Numbers & QR Code scanner/renderer
-│   │       ├── call/                   # WebRTC 1-to-1 & Group Audio/Video calling screens
+│   │       ├── call/                   # WebRTC 1-to-1 Audio/Video calling screens
 │   │       ├── vault/                  # Biometric-gated encrypted note & file storage UI
 │   │       ├── shield/                 # Privacy Score dashboard, live permission audit & panic wipe
-│   │       ├── ai/                     # On-device translator, summarizer & smart tone rewriter
+│   │       ├── ai/                     # On-device translator, summarizer & smart context chips
 │   │       ├── status/                 # 24-hour ephemeral rich status stories & viewer
 │   │       ├── components/             # Reusable UI components & permission rationale dialogs
 │   │       └── settings/               # Privacy controls, App lock, data saver & device management
@@ -146,10 +156,10 @@ Argus Ecosystem
     ├── src/
     │   ├── routes/                     # Modular REST API endpoints (Auth, Keys, Users, Media, Groups, Calls)
     │   ├── ws/                         # Real-time WebSocket router (Delivery/Read receipts, Typing, WebRTC)
-    │   ├── db/                         # Schema v2 Zero-Knowledge atomic database with automated migrations
+    │   ├── db/                         # Schema v2 Zero-Knowledge PostgreSQL / Neon.tech database with atomic failover
     │   └── server.ts                   # Master server entrypoint & graceful shutdown lifecycle
     ├── dist/                           # Compiled production JavaScript bundle
-    └── tests/                          # Automated Jest integration test suite (41/41 Passing)
+    └── tests/                          # Automated Jest integration test suite (49/49 Passing)
 ```
 
 ---
@@ -185,9 +195,35 @@ sequenceDiagram
 | **Symmetric Ratchet** | KDF Chain Keys via HKDF-SHA256 | Per-message forward secrecy |
 | **Asymmetric Ratchet** | Continuous Diffie-Hellman Key Exchange | Immediate post-compromise healing |
 | **Authenticated Cipher** | AES-256-GCM (128-bit auth tag) | Confidentiality + ciphertext integrity |
-| **Out-of-Order Handling** | Skipped Message Key Store | Reliable delivery through unreliable networks (up to 2000 keys) |
+| **Offline Resilience** | Pre-encrypted `wire_payload_json` | Lossless Double Ratchet replay without desynchronization |
 | **Identity Verification** | 60-digit iterated SHA-512 Safety Numbers | Protection against Man-in-the-Middle (MITM) attacks |
 | **Local Keystore** | Android StrongBox TEE Hardware KeyStore | Keys never exposed to Android userland |
+
+---
+
+## ☁️ Cloud Deployment (Render & Neon.tech)
+
+Argus includes a zero-config blueprint for instant cloud deployment.
+
+### 1. Deploy Gateway to Render.com
+1. Fork or push this repository to GitHub.
+2. Log into [Render.com](https://render.com) and create a **New Blueprint Instance**.
+3. Select your repository — Render will automatically detect [`render.yaml`](render.yaml) and configure the environment:
+   * **Runtime**: Node.js 20+
+   * **Build Command**: `npm install && npm run build`
+   * **Start Command**: `npm run start`
+   * **Health Check**: `/health`
+
+### 2. Connect Neon.tech Serverless PostgreSQL
+1. Create a free serverless PostgreSQL database on [Neon.tech](https://neon.tech).
+2. Copy your connection string (e.g., `postgres://user:pass@ep-xyz.us-east-2.aws.neon.tech/neondb?sslmode=require`).
+3. In your Render Dashboard, add the environment variable:
+   * `DATABASE_URL` = `<YOUR_NEON_POSTGRES_CONNECTION_STRING>`
+4. The server will automatically connect to Neon.tech and provision all database tables (`argus_users`, `argus_key_bundles`, `argus_offline_messages`, `argus_tokens`).
+
+### 3. Keep Warm with UptimeRobot (Optional)
+To avoid Render free tier 50s cold starts:
+* Set up an HTTP monitor on [UptimeRobot](https://uptimerobot.com) targeting `https://<YOUR_RENDER_URL>/health` every **5–10 minutes**.
 
 ---
 
@@ -201,7 +237,7 @@ sequenceDiagram
 
 ---
 
-### 2. Backend Gateway Setup
+### 2. Backend Gateway Setup (Local)
 
 ```bash
 # 1. Clone repository
@@ -218,7 +254,7 @@ cp .env.example .env
 npm test
 npm run build
 
-# 5. Start the production gateway server
+# 5. Start the gateway server
 npm start
 ```
 
@@ -232,7 +268,7 @@ npm start
 # Navigate to Android directory
 cd ../android
 
-# Run cryptographic & AI unit test suite
+# Run cryptographic, UI & AI unit test suite
 ./gradlew testDebugUnitTest
 
 # Assemble debug APK
@@ -240,7 +276,7 @@ cd ../android
 ```
 
 *The generated APK binary is output to:*  
-`android/app/build/outputs/apk/debug/app-debug.apk` (and mirrored to root [`Argus-debug.apk`](Argus-debug.apk)).
+`android/app/build/outputs/apk/debug/app-debug.apk` (and mirrored to root [**`Argus-debug.apk`**](Argus-debug.apk)).
 
 ---
 
@@ -282,7 +318,7 @@ cd ../android
 | `GET` | `/api/media/download/:file` | No | Download media with chunked HTTP 206 range streaming |
 | `GET` | `/api/calls/ice-servers` | Yes | Fetch STUN/TURN ICE server credentials |
 
-### WebSocket Event Protocol (`ws://localhost:8080/ws`)
+### WebSocket Event Protocol (`ws://localhost:8080/ws` or `wss://.../ws`)
 
 ```json
 // Client -> Server: Authenticate Connection
@@ -293,12 +329,17 @@ cd ../android
   "type": "SEND_MESSAGE",
   "payload": {
     "id": "msg-uuid-1234",
+    "conversationId": "conv_alice_bob",
     "senderId": "alice",
     "recipientId": "bob",
-    "ciphertext": "AES256GCM_BASE64_PAYLOAD",
-    "iv": "IV_BASE64",
-    "ephemeralKey": "CURVE25519_EPHEMERAL_PUB",
-    "sequenceNumber": 42
+    "dhPublicKeyBase64": "DH_PUB_KEY_BASE64",
+    "sequenceNumber": 1,
+    "previousChainLength": 0,
+    "ivBase64": "IV_BASE64",
+    "ciphertextBase64": "AES256GCM_BASE64_PAYLOAD",
+    "senderIdentityPublicKeyBase64": "IK_A_BASE64",
+    "ephemeralPublicKeyBase64": "EK_A_BASE64",
+    "oneTimePreKeyId": 1
   }
 }
 

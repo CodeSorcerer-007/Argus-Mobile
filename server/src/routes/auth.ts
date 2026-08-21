@@ -114,7 +114,7 @@ export function createAuthRouter(
   router.post('/register', sensitiveLimiter, (req: Request, res: Response): void => {
     const parseResult = registerSchema.safeParse(req.body);
     if (!parseResult.success) {
-      res.status(400).json({ error: parseResult.error.issues[0].message });
+      res.status(400).json({ success: false, error: parseResult.error.issues[0].message });
       return;
     }
 
@@ -122,7 +122,7 @@ export function createAuthRouter(
     const cleanUsername = username.toLowerCase().trim();
 
     if (!db.isUsernameAvailable(cleanUsername)) {
-      res.status(400).json({ error: `Username '@${cleanUsername}' is already taken. Please choose another.` });
+      res.status(400).json({ success: false, error: `Username '@${cleanUsername}' is already taken. Please choose another.` });
       return;
     }
 
@@ -198,7 +198,7 @@ export function createAuthRouter(
   router.post('/login', sensitiveLimiter, (req: Request, res: Response): void => {
     const parseResult = loginSchema.safeParse(req.body);
     if (!parseResult.success) {
-      res.status(400).json({ error: parseResult.error.issues[0].message });
+      res.status(400).json({ success: false, error: parseResult.error.issues[0].message });
       return;
     }
 
@@ -210,6 +210,7 @@ export function createAuthRouter(
     if (attemptRecord && Date.now() < attemptRecord.lockedUntil) {
       const waitMinutes = Math.ceil((attemptRecord.lockedUntil - Date.now()) / 60000);
       res.status(429).json({
+        success: false,
         error: `Account locked due to too many failed password attempts. Try again in ${waitMinutes} minute(s).`
       });
       return;
@@ -217,7 +218,7 @@ export function createAuthRouter(
 
     const user = db.findUserByUsername(cleanUsername);
     if (!user || !user.passwordHash || !user.salt) {
-      res.status(401).json({ error: 'Invalid username or password' });
+      res.status(401).json({ success: false, error: 'Invalid username or password' });
       return;
     }
 
@@ -235,13 +236,14 @@ export function createAuthRouter(
           count: currentFailures,
           lockedUntil: Date.now() + 15 * 60 * 1000 // 15-minute lock
         });
-        res.status(429).json({ error: 'Too many incorrect attempts. Account locked for 15 minutes.' });
+        res.status(429).json({ success: false, error: 'Too many incorrect attempts. Account locked for 15 minutes.' });
       } else {
         db.failedPasswordAttempts.set(cleanUsername, {
           count: currentFailures,
           lockedUntil: 0
         });
         res.status(401).json({
+          success: false,
           error: `Invalid username or password. (${5 - currentFailures} attempt(s) remaining)`
         });
       }
@@ -303,20 +305,20 @@ export function createAuthRouter(
   router.post('/verify-recovery-key', sensitiveLimiter, (req: Request, res: Response): void => {
     const { username, recoveryKey } = req.body;
     if (!username || !recoveryKey) {
-      res.status(400).json({ error: 'Username and Recovery Key are required' });
+      res.status(400).json({ valid: false, error: 'Username and Recovery Key are required' });
       return;
     }
 
     const cleanUsername = String(username).toLowerCase().trim();
     const user = db.findUserByUsername(cleanUsername);
     if (!user) {
-      res.status(404).json({ error: `User '@${cleanUsername}' does not exist` });
+      res.status(404).json({ valid: false, error: `User '@${cleanUsername}' does not exist` });
       return;
     }
 
     // Strict recovery key verification (BUG-4 fixed: no bypass if recovery key hash is missing)
     if (!user.recoveryKeyHash || !user.recoveryKeySalt) {
-      res.status(403).json({ error: 'Emergency recovery is not configured for this account' });
+      res.status(403).json({ valid: false, error: 'Emergency recovery is not configured for this account' });
       return;
     }
 
@@ -328,7 +330,7 @@ export function createAuthRouter(
       crypto.timingSafeEqual(expectedBuffer, actualBuffer);
 
     if (!isValid) {
-      res.status(400).json({ error: 'Invalid recovery key. Please check your 16-character code.' });
+      res.status(400).json({ valid: false, error: 'Invalid recovery key. Please check your 16-character code.' });
       return;
     }
 
@@ -341,7 +343,7 @@ export function createAuthRouter(
   router.post('/reset-password', sensitiveLimiter, (req: Request, res: Response): void => {
     const parseResult = resetPasswordSchema.safeParse(req.body);
     if (!parseResult.success) {
-      res.status(400).json({ error: parseResult.error.issues[0].message });
+      res.status(400).json({ success: false, error: parseResult.error.issues[0].message });
       return;
     }
 
@@ -350,13 +352,13 @@ export function createAuthRouter(
 
     const user = db.findUserByUsername(cleanUsername);
     if (!user) {
-      res.status(404).json({ error: `Account '@${cleanUsername}' not found` });
+      res.status(404).json({ success: false, error: `Account '@${cleanUsername}' not found` });
       return;
     }
 
     // Strict recovery key verification (BUG-4 fixed: mandatory check)
     if (!user.recoveryKeyHash || !user.recoveryKeySalt) {
-      res.status(403).json({ error: 'Emergency recovery is not configured for this account. Cannot reset password.' });
+      res.status(403).json({ success: false, error: 'Emergency recovery is not configured for this account. Cannot reset password.' });
       return;
     }
 
@@ -368,7 +370,7 @@ export function createAuthRouter(
       crypto.timingSafeEqual(expectedBuffer, actualBuffer);
 
     if (!isKeyMatch) {
-      res.status(400).json({ error: 'Invalid recovery key. Please enter the valid emergency key.' });
+      res.status(400).json({ success: false, error: 'Invalid recovery key. Please enter the valid emergency key.' });
       return;
     }
 
