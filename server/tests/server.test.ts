@@ -499,6 +499,41 @@ describe('Argus Comprehensive Production Test Suite', () => {
       expect(res.body.results[0].passwordHash).toBeUndefined();
     });
 
+    test('GET /api/users/search does not match internal UUIDs (BUG-L fixed)', async () => {
+      // Searching for Bob's internal UUID or prefix must yield 0 results
+      const res = await request(app)
+        .get(`/api/users/search?q=${bobUserId.substring(0, 8)}`)
+        .set('Authorization', `Bearer ${aliceToken}`);
+
+      expect(res.status).toBe(200);
+      const matched = res.body.results.filter((u: any) => u.id === bobUserId);
+      expect(matched.length).toBe(0);
+    });
+
+    test('POST /api/users/discover-contacts discovers registered users via phone hash (BUG-B verified)', async () => {
+      // Assign a phone number hash to Bob
+      const bob = db.users.get(bobUserId)!;
+      bob.phoneHash = db.hashPhone('+15551234567');
+      db.save();
+
+      const res = await request(app)
+        .post('/api/users/discover-contacts')
+        .set('Authorization', `Bearer ${aliceToken}`)
+        .send({
+          phoneHashes: [
+            db.hashPhone('+15551234567'),
+            db.hashPhone('+15559999999') // unknown phone
+          ]
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.contacts).toBeDefined();
+      expect(res.body.contacts.length).toBe(1);
+      expect(res.body.contacts[0].id).toBe(bobUserId);
+      expect(res.body.contacts[0].username).toBe(bobUsername);
+      expect(res.body.contacts[0].passwordHash).toBeUndefined();
+    });
+
     test('PUT /api/users/me updates profile, allows dot in username, and prevents duplicates (BUG-7 & BUG-10 fixed)', async () => {
       const updateRes = await request(app)
         .put('/api/users/me')
@@ -619,6 +654,19 @@ describe('Argus Comprehensive Production Test Suite', () => {
       expect(res.body.group.admins).toContain(aliceUserId);
       expect(res.body.group.members).toContain(bobUserId);
       testGroupId = res.body.group.id;
+    });
+
+    test('GET /api/groups returns all groups the user belongs to (BUG-A verified)', async () => {
+      const res = await request(app)
+        .get('/api/groups')
+        .set('Authorization', `Bearer ${aliceToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.groups).toBeDefined();
+      expect(Array.isArray(res.body.groups)).toBe(true);
+      const found = res.body.groups.find((g: any) => g.id === testGroupId);
+      expect(found).toBeDefined();
+      expect(found.title).toBe('Cryptography Research Unit');
     });
 
     test('GET /api/groups/:groupId returns group details and member profiles', async () => {
@@ -968,6 +1016,88 @@ describe('Argus Comprehensive Production Test Suite', () => {
           }));
         }
       }
+    });
+
+    test('WebSocket prevents senderId spoofing by enforcing authenticated user ID (BUG-F fixed)', (done) => {
+      aliceWs = new WebSocket(`ws://localhost:${wsPort}/ws`);
+      bobWs = new WebSocket(`ws://localhost:${wsPort}/ws`);
+
+      let aliceAuthed = false;
+      let bobAuthed = false;
+
+      aliceWs.on('open', () => {
+        aliceWs.send(JSON.stringify({ type: 'AUTH', token: aliceToken, deviceId: 'pixel9' }));
+      });
+      bobWs.on('open', () => {
+        bobWs.send(JSON.stringify({ type: 'AUTH', token: bobToken, deviceId: 'galaxy25' }));
+      });
+
+      aliceWs.on('message', (data) => {
+        const event = JSON.parse(data.toString());
+        if (event.type === 'AUTH_SUCCESS') {
+          aliceAuthed = true;
+          checkReady();
+        }
+      });
+
+      bobWs.on('message', (data) => {
+        const event = JSON.parse(data.toString());
+        if (event.type === 'AUTH_SUCCESS') {
+          bobAuthed = true;
+          checkReady();
+        }
+        if (event.type === 'NEW_MESSAGE' && event.payload.id === 'msg_spoof_attempt') {
+          // Verify that the spoofed senderId was replaced with Alice's true authenticated userId
+          expect(event.payload.senderId).toBe(aliceUserId);
+          expect(event.payload.senderId).not.toBe('malicious_spoofed_sender_id');
+          done();
+        }
+      });
+
+      function checkReady() {
+        if (aliceAuthed && bobAuthed) {
+          const spoofedMessage: EncryptedMessagePayload = {
+            id: 'msg_spoof_attempt',
+            conversationId: 'conv_alice_bob',
+            senderId: 'malicious_spoofed_sender_id', // Attacker attempts to spoof sender
+            recipientId: bobUserId,
+            dhPublicKeyBase64: 'AliceDhPubMock==',
+            sequenceNumber: 5,
+            previousChainLength: 0,
+            ivBase64: 'MockIV==',
+            ciphertextBase64: 'mockPayload==',
+            timestamp: Date.now(),
+            status: 'QUEUED'
+          };
+          aliceWs.send(JSON.stringify({ type: 'SEND_MESSAGE', payload: spoofedMessage }));
+        }
+      }
+    });
+
+    test('WebSocket handles malformed WebRTC events with missing targetUserId gracefully (BUG-C fixed)', (done) => {
+      aliceWs = new WebSocket(`ws://localhost:${wsPort}/ws`);
+
+      aliceWs.on('open', () => {
+        aliceWs.send(JSON.stringify({ type: 'AUTH', token: aliceToken, deviceId: 'pixel9' }));
+      });
+
+      aliceWs.on('message', (data) => {
+        const event = JSON.parse(data.toString());
+        if (event.type === 'AUTH_SUCCESS') {
+          // Send malformed WebRTC call events without targetUserId
+          aliceWs.send(JSON.stringify({ type: 'CALL_OFFER', callId: 'bad_call_1' }));
+          aliceWs.send(JSON.stringify({ type: 'CALL_ANSWER', callId: 'bad_call_2' }));
+          aliceWs.send(JSON.stringify({ type: 'ICE_CANDIDATE', callId: 'bad_call_3' }));
+          aliceWs.send(JSON.stringify({ type: 'CALL_END', callId: 'bad_call_4' }));
+
+          // Send heartbeat to confirm server is healthy and alive
+          aliceWs.send(JSON.stringify({ type: 'HEARTBEAT' }));
+        }
+        if (event.type === 'PONG') {
+          // Server responded normally after handling bad events without crashing
+          done();
+        }
+      });
     });
   });
 });

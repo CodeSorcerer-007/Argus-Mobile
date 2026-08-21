@@ -20,6 +20,11 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
         const val DATABASE_VERSION = 3
 
         private val json = Json { ignoreUnknownKeys = true }
+
+        fun getDirectConversationId(userIdA: String, userIdB: String): String {
+            val sorted = listOf(userIdA, userIdB).sorted()
+            return "conv_${sorted[0]}_${sorted[1]}"
+        }
     }
 
     private val scope = CoroutineScope(Dispatchers.IO)
@@ -191,10 +196,61 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
         scope.launch {
             purgeExpiredDisappearingMessages()
             loadConversations()
+            loadAllMessages()
             loadContacts()
             loadVaultItems()
             loadCalls()
         }
+    }
+
+    fun loadAllMessages(): Map<String, List<Message>> {
+        val map = mutableMapOf<String, MutableList<Message>>()
+        try {
+            val db = readableDatabase
+            val cursor = db.rawQuery("SELECT * FROM messages ORDER BY timestamp ASC", null)
+            cursor.use {
+                while (it.moveToNext()) {
+                    val convId = it.getString(it.getColumnIndexOrThrow("conversation_id"))
+                    val reactionsJson = it.getString(it.getColumnIndexOrThrow("reactions_json"))
+                    val reactionsMap = try {
+                        if (reactionsJson != null) json.decodeFromString<Map<String, String>>(reactionsJson) else emptyMap()
+                    } catch (e: Exception) {
+                        emptyMap()
+                    }
+
+                    val statusStr = it.getString(it.getColumnIndexOrThrow("status"))
+                    val msgStatus = try {
+                        MessageStatus.valueOf(statusStr)
+                    } catch (e: Exception) {
+                        MessageStatus.DELIVERED
+                    }
+
+                    val msg = Message(
+                        id = it.getString(it.getColumnIndexOrThrow("id")),
+                        conversationId = convId,
+                        senderId = it.getString(it.getColumnIndexOrThrow("sender_id")),
+                        recipientId = it.getString(it.getColumnIndexOrThrow("recipient_id")),
+                        text = it.getString(it.getColumnIndexOrThrow("text")),
+                        mediaUri = it.getString(it.getColumnIndexOrThrow("media_uri")),
+                        mediaType = it.getString(it.getColumnIndexOrThrow("media_type")),
+                        mediaSizeBytes = it.getLong(it.getColumnIndexOrThrow("media_size")),
+                        status = msgStatus,
+                        timestamp = it.getLong(it.getColumnIndexOrThrow("timestamp")),
+                        replyToMessageId = it.getString(it.getColumnIndexOrThrow("reply_to_id")),
+                        replyToSnippet = it.getString(it.getColumnIndexOrThrow("reply_to_snippet")),
+                        reactions = reactionsMap,
+                        isEdited = it.getInt(it.getColumnIndexOrThrow("is_edited")) == 1,
+                        expiresAt = if (it.isNull(it.getColumnIndexOrThrow("expires_at"))) null else it.getLong(it.getColumnIndexOrThrow("expires_at")),
+                        isEncrypted = it.getInt(it.getColumnIndexOrThrow("is_encrypted")) == 1
+                    )
+                    map.getOrPut(convId) { mutableListOf() }.add(msg)
+                }
+            }
+            _messagesFlow.value = map
+        } catch (e: Exception) {
+            android.util.Log.e("ArgusLocalStore", "loadAllMessages failed", e)
+        }
+        return map
     }
 
     // --- Conversations CRUD ---
@@ -280,7 +336,37 @@ class ArgusLocalStore(context: Context) : SQLiteOpenHelper(context, DATABASE_NAM
         val list = mutableListOf<Message>()
         try {
             val db = readableDatabase
-            val cursor = db.rawQuery("SELECT * FROM messages WHERE conversation_id = ? ORDER BY timestamp ASC", arrayOf(convId))
+            val rawId = convId.removePrefix("conv_")
+            val parts = rawId.split("_")
+            val cursor = if (parts.size == 2) {
+                val u1 = parts[0]
+                val u2 = parts[1]
+                db.rawQuery(
+                    """
+                    SELECT * FROM messages 
+                    WHERE conversation_id = ? 
+                       OR conversation_id = ? 
+                       OR conversation_id = ? 
+                       OR ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))
+                    ORDER BY timestamp ASC
+                    """.trimIndent(),
+                    arrayOf(convId, "conv_$u1", "conv_$u2", u1, u2, u2, u1)
+                )
+            } else if (parts.size == 1 && rawId.isNotBlank()) {
+                val peerId = rawId
+                db.rawQuery(
+                    """
+                    SELECT * FROM messages 
+                    WHERE conversation_id = ? 
+                       OR sender_id = ? 
+                       OR recipient_id = ?
+                    ORDER BY timestamp ASC
+                    """.trimIndent(),
+                    arrayOf(convId, peerId, peerId)
+                )
+            } else {
+                db.rawQuery("SELECT * FROM messages WHERE conversation_id = ? ORDER BY timestamp ASC", arrayOf(convId))
+            }
             cursor.use {
                 while (it.moveToNext()) {
                     val reactionsJson = it.getString(it.getColumnIndexOrThrow("reactions_json"))

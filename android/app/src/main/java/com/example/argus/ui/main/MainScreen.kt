@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.argus.R
 import com.example.argus.core.permission.ArgusPermissionType
+import com.example.argus.data.local.ArgusLocalStore
 import com.example.argus.core.permission.PermissionManager
 import com.example.argus.data.model.CallRecord
 import com.example.argus.data.model.CallStatus
@@ -294,14 +295,14 @@ fun MainScreen(
                                         .background(ObsidianSurface)
                                         .clickable {
                                             coroutineScope.launch {
-                                                try {
-                                                    val convId = authRepository.startConversationWithUser(user)
-                                                    showNewChatDialog = false
-                                                    onConversationClick(convId)
+                                                val myId = currentUser?.id ?: "me"
+                                                val convId = try {
+                                                    authRepository.startConversationWithUser(user)
                                                 } catch (e: Exception) {
-                                                    showNewChatDialog = false
-                                                    onConversationClick("conv_${user.id}")
+                                                    ArgusLocalStore.getDirectConversationId(myId, user.id)
                                                 }
+                                                showNewChatDialog = false
+                                                onConversationClick(convId)
                                             }
                                         }
                                         .padding(12.dp),
@@ -341,14 +342,14 @@ fun MainScreen(
                                             username = rawId,
                                             displayName = searchInput.trim()
                                         )
-                                        try {
-                                            val convId = authRepository.startConversationWithUser(directUser)
-                                            showNewChatDialog = false
-                                            onConversationClick(convId)
+                                        val myId = currentUser?.id ?: "me"
+                                        val convId = try {
+                                            authRepository.startConversationWithUser(directUser)
                                         } catch (e: Exception) {
-                                            showNewChatDialog = false
-                                            onConversationClick("conv_${directUser.id}")
+                                            ArgusLocalStore.getDirectConversationId(myId, directUser.id)
                                         }
+                                        showNewChatDialog = false
+                                        onConversationClick(convId)
                                     }
                                 }
                                 .padding(12.dp)
@@ -897,7 +898,12 @@ private fun CallsTabWhatsAppStyle(
                     .clip(RoundedCornerShape(14.dp))
                     .background(ObsidianSurface)
                     .clickable {
-                        Toast.makeText(context, "Select contact to call", Toast.LENGTH_SHORT).show()
+                        val firstContact = contacts.firstOrNull()
+                        if (firstContact != null) {
+                            onStartCall(firstContact, CallType.VOICE)
+                        } else {
+                            Toast.makeText(context, "Search user to start encrypted call", Toast.LENGTH_SHORT).show()
+                        }
                     }
                     .padding(14.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -914,7 +920,7 @@ private fun CallsTabWhatsAppStyle(
                 Spacer(modifier = Modifier.width(14.dp))
                 Column {
                     Text(text = "Start a new call", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = TextPrimary)
-                    Text(text = "Share link or call contacts securely", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
+                    Text(text = "Encrypted peer-to-peer HD voice & video", style = MaterialTheme.typography.bodySmall, color = TextSecondary)
                 }
             }
         }
@@ -947,11 +953,26 @@ private fun CallsTabWhatsAppStyle(
             }
         } else {
             items(calls) { call ->
+                val formattedTime = remember(call.timestamp, call.durationSec) {
+                    val sdf = SimpleDateFormat("MMM d, h:mm a", Locale.getDefault())
+                    val timeStr = sdf.format(Date(call.timestamp))
+                    if (call.durationSec > 0) "$timeStr (${call.durationSec / 60}m ${call.durationSec % 60}s)" else timeStr
+                }
+
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(14.dp))
                         .background(ObsidianSurface)
+                        .clickable {
+                            val contact = contacts.firstOrNull { it.userId == call.peerId } ?: Contact(
+                                id = "c_${call.peerId}",
+                                userId = call.peerId,
+                                displayName = call.peerName,
+                                phoneNumber = "+1 555 000 0000"
+                            )
+                            onStartCall(contact, call.callType)
+                        }
                         .padding(14.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
@@ -977,7 +998,7 @@ private fun CallsTabWhatsAppStyle(
                                 Icon(imageVector = callIcon, contentDescription = null, tint = iconTint, modifier = Modifier.size(14.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(
-                                    text = if (call.durationSec > 0) "${call.durationSec / 60}m ${call.durationSec % 60}s" else "Yesterday, 10:20 PM",
+                                    text = formattedTime,
                                     style = MaterialTheme.typography.labelSmall,
                                     color = TextSecondary
                                 )

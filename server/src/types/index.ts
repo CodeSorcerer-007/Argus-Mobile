@@ -46,6 +46,8 @@ export interface EncryptedMessagePayload {
   previousChainLength: number;
   ivBase64: string;
   ciphertextBase64: string;
+  senderIdentityPublicKeyBase64?: string;
+  ephemeralPublicKeyBase64?: string;
   mediaUrl?: string;
   mediaType?: string;
   mediaSize?: number;

@@ -240,7 +240,8 @@ class AuthRepository(
                 // Lazily initializes on first message send
             }
 
-            val convId = "conv_${user.id}"
+            val myUserId = preferences.loadCurrentUser()?.id ?: "me"
+            val convId = ArgusLocalStore.getDirectConversationId(myUserId, user.id)
             val existing = localStore.loadConversations().firstOrNull { it.id == convId }
             if (existing == null) {
                 val conv = com.example.argus.data.model.Conversation(
@@ -254,7 +255,8 @@ class AuthRepository(
             return convId
         } catch (e: Exception) {
             android.util.Log.e("AuthRepository", "startConversationWithUser error", e)
-            return "conv_${user.id}"
+            val myUserId = preferences.loadCurrentUser()?.id ?: "me"
+            return ArgusLocalStore.getDirectConversationId(myUserId, user.id)
         }
     }
 

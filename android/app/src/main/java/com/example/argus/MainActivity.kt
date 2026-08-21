@@ -44,4 +44,16 @@ class MainActivity : FragmentActivity() {
             }
         }
     }
+
+    override fun onResume() {
+        super.onResume()
+        try {
+            val appContainer = (application as? ArgusApplication)?.container ?: ArgusApplication.instance.container
+            if (appContainer.authRepository.isLoggedIn() && !appContainer.webSocketClient.connectionState.value) {
+                appContainer.webSocketClient.connect()
+            }
+        } catch (e: Throwable) {
+            // Ignore
+        }
+    }
 }

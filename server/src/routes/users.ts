@@ -119,8 +119,7 @@ export function createUsersRouter(db: ArgusDatabase): Router {
     for (const u of db.users.values()) {
       if (
         (u.username && u.username.toLowerCase().includes(query)) ||
-        u.displayName.toLowerCase().includes(query) ||
-        u.id.toLowerCase().includes(query)
+        u.displayName.toLowerCase().includes(query)
       ) {
         results.push(sanitizeUserProfile(u));
       }

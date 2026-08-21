@@ -267,9 +267,11 @@ cd ../android
 | `PUT` | `/api/users/me` | Yes | Update profile name, bio & avatar |
 | `DELETE` | `/api/users/me` | Yes | Permanently delete user account & purge tokens (GDPR/Play Store compliance) |
 | `GET` | `/api/users/search` | Yes | Search users by username handle |
+| `POST` | `/api/users/discover-contacts` | Yes | Privacy-preserving contact discovery via phone number SHA-256 hashes |
 | `POST` | `/api/users/push-token` | Yes | Register Firebase Cloud Messaging (FCM) push token |
 | `GET` | `/api/users/:userId` | Yes | Fetch public user profile |
 | `POST` | `/api/groups/create` | Yes | Create end-to-end encrypted group chat |
+| `GET` | `/api/groups` | Yes | List all encrypted groups the user belongs to |
 | `GET` | `/api/groups/:groupId` | Yes | Get group information & member list |
 | `PUT` | `/api/groups/:groupId` | Yes | Update group name, avatar & topic (Admin only) |
 | `POST` | `/api/groups/:groupId/add-members` | Yes | Add members to group (Admin only) |

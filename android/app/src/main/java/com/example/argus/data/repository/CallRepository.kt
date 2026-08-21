@@ -5,9 +5,13 @@ import com.example.argus.data.model.CallRecord
 import com.example.argus.data.model.CallStatus
 import com.example.argus.data.model.CallType
 import com.example.argus.data.remote.ArgusWebSocketClient
+import com.example.argus.data.remote.WebSocketInboundEvent
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import java.util.UUID
 
 data class ActiveCallState(
@@ -29,10 +33,61 @@ class CallRepository(
     private val localStore: ArgusLocalStore,
     private val webSocketClient: ArgusWebSocketClient
 ) {
+    private val scope = CoroutineScope(Dispatchers.IO)
     val callHistory: StateFlow<List<CallRecord>> = localStore.callsFlow
 
     private val _activeCallFlow = MutableStateFlow<ActiveCallState?>(null)
     val activeCallFlow: StateFlow<ActiveCallState?> = _activeCallFlow.asStateFlow()
+
+    init {
+        // Collect real-time WebRTC signaling events from WebSocket
+        scope.launch {
+            webSocketClient.inboundEvents.collect { event ->
+                when (event) {
+                    is WebSocketInboundEvent.IncomingCall -> {
+                        if (_activeCallFlow.value == null) {
+                            val contacts = localStore.loadContacts()
+                            val callerContact = contacts.firstOrNull { it.userId == event.callerId }
+                            val callerName = callerContact?.displayName ?: "Argus Contact"
+                            val callTypeEnum = try { CallType.valueOf(event.callType) } catch (e: Exception) { CallType.VOICE }
+
+                            receiveIncomingCall(
+                                callerId = event.callerId,
+                                callerName = callerName,
+                                callerAvatar = callerContact?.avatarUrl,
+                                callId = event.callId,
+                                callType = callTypeEnum
+                            )
+                        }
+                    }
+                    is WebSocketInboundEvent.CallAnswered -> {
+                        val current = _activeCallFlow.value
+                        if (current != null && current.callId == event.callId) {
+                            _activeCallFlow.value = current.copy(status = CallStatus.CONNECTED)
+                        }
+                    }
+                    is WebSocketInboundEvent.CallTerminated -> {
+                        val current = _activeCallFlow.value
+                        if (current != null && current.callId == event.callId) {
+                            val record = CallRecord(
+                                id = current.callId,
+                                peerId = current.peerId,
+                                peerName = current.peerName,
+                                peerAvatar = current.peerAvatar,
+                                callType = current.callType,
+                                status = if (current.status == CallStatus.CONNECTED) CallStatus.ENDED else CallStatus.MISSED,
+                                durationSec = current.durationSeconds,
+                                timestamp = System.currentTimeMillis()
+                            )
+                            localStore.saveCall(record)
+                            _activeCallFlow.value = null
+                        }
+                    }
+                    else -> {}
+                }
+            }
+        }
+    }
 
     fun initiateCall(peerId: String, peerName: String, peerAvatar: String?, callType: CallType): ActiveCallState {
         val callId = UUID.randomUUID().toString()
@@ -80,6 +135,24 @@ class CallRepository(
             callId = current.callId,
             sdp = "v=0\r\no=Argus 456 789 IN IP4 0.0.0.0\r\ns=Argus E2EE WebRTC Answer\r\n"
         )
+    }
+
+    fun rejectCall() {
+        val current = _activeCallFlow.value ?: return
+        webSocketClient.sendCallEnd(current.peerId, current.callId)
+
+        val record = CallRecord(
+            id = current.callId,
+            peerId = current.peerId,
+            peerName = current.peerName,
+            peerAvatar = current.peerAvatar,
+            callType = current.callType,
+            status = CallStatus.MISSED,
+            durationSec = 0,
+            timestamp = System.currentTimeMillis()
+        )
+        localStore.saveCall(record)
+        _activeCallFlow.value = null
     }
 
     fun toggleMute() {

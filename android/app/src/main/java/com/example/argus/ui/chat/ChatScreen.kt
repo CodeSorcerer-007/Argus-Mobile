@@ -37,6 +37,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.input.key.*
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import com.example.argus.core.permission.ArgusPermissionType
 import com.example.argus.core.permission.PermissionManager
 import com.example.argus.data.model.Conversation
@@ -68,6 +73,8 @@ fun ChatScreen(
     onVerifySecurityClick: () -> Unit,
     onReactionClick: (Message, String) -> Unit,
     onContactInfoClick: () -> Unit = onVerifySecurityClick,
+    isPeerTyping: Boolean = false,
+    onTyping: (Boolean) -> Unit = {},
     aiRepository: AiAssistantRepository
 ) {
     var inputText by remember { mutableStateOf("") }
@@ -276,6 +283,26 @@ fun ChatScreen(
         }
     }
 
+    LaunchedEffect(inputText) {
+        if (inputText.isNotBlank()) {
+            onTyping(true)
+            delay(3000)
+            onTyping(false)
+        } else {
+            onTyping(false)
+        }
+    }
+
+    val sendCurrentMessage = {
+        if (inputText.isNotBlank()) {
+            val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
+            onSendMessage(inputText.trim(), null, null, expiresAt)
+            inputText = ""
+            replyingToMessage = null
+            onTyping(false)
+        }
+    }
+
     // Active Permission Rationale Dialog
     if (activeRationalePermission != null) {
         ArgusPermissionRationaleDialog(
@@ -365,9 +392,10 @@ fun ChatScreen(
                                 maxLines = 1
                             )
                             Text(
-                                text = if (selectedDisappearingDuration != null) "🔒 Disappearing (${selectedDisappearingDuration}s)" else "Online • E2EE",
+                                text = if (isPeerTyping) "typing..." else if (selectedDisappearingDuration != null) "🔒 Disappearing (${selectedDisappearingDuration}s)" else "Online • E2EE",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = if (selectedDisappearingDuration != null) ShieldAmber else EmeraldLight
+                                color = if (isPeerTyping) EmeraldPrimary else if (selectedDisappearingDuration != null) ShieldAmber else EmeraldLight,
+                                fontWeight = if (isPeerTyping) FontWeight.Bold else FontWeight.Normal
                             )
                         }
                     }
@@ -617,6 +645,13 @@ fun ChatScreen(
                                     value = inputText,
                                     onValueChange = { inputText = it },
                                     placeholder = { Text("Message", color = TextMuted, fontSize = 15.sp) },
+                                    keyboardOptions = KeyboardOptions(
+                                        imeAction = ImeAction.Send,
+                                        keyboardType = KeyboardType.Text
+                                    ),
+                                    keyboardActions = KeyboardActions(
+                                        onSend = { sendCurrentMessage() }
+                                    ),
                                     colors = TextFieldDefaults.colors(
                                         focusedContainerColor = Color.Transparent,
                                         unfocusedContainerColor = Color.Transparent,
@@ -626,8 +661,17 @@ fun ChatScreen(
                                         focusedTextColor = TextPrimary,
                                         unfocusedTextColor = TextPrimary
                                     ),
-                                    modifier = Modifier.weight(1f),
-                                    maxLines = 4
+                                    singleLine = true,
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .onPreviewKeyEvent { keyEvent ->
+                                            if (keyEvent.key == Key.Enter && keyEvent.type == KeyEventType.KeyDown && !keyEvent.isShiftPressed) {
+                                                sendCurrentMessage()
+                                                true
+                                            } else {
+                                                false
+                                            }
+                                        }
                                 )
 
                                 IconButton(
@@ -653,12 +697,7 @@ fun ChatScreen(
                         // Dynamic Send or Voice Record Button
                         if (inputText.isNotBlank()) {
                             IconButton(
-                                onClick = {
-                                    val expiresAt = selectedDisappearingDuration?.let { System.currentTimeMillis() + (it * 1000L) } ?: 0L
-                                    onSendMessage(inputText.trim(), null, null, expiresAt)
-                                    inputText = ""
-                                    replyingToMessage = null
-                                },
+                                onClick = { sendCurrentMessage() },
                                 modifier = Modifier
                                     .size(48.dp)
                                     .clip(CircleShape)

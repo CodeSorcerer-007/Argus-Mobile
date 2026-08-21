@@ -69,6 +69,13 @@ class ArgusApplication : Application() {
             android.util.Log.w("ArgusApplication", "BouncyCastle provider registration warning", e)
         }
         container = AppContainer(this)
+        try {
+            if (container.authRepository.isLoggedIn()) {
+                container.webSocketClient.connect()
+            }
+        } catch (e: Throwable) {
+            android.util.Log.e("ArgusApplication", "Startup WebSocket connect error", e)
+        }
     }
 
     companion object {

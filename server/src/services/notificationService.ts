@@ -3,6 +3,10 @@
  * Dispatches encrypted wakeup payloads to mobile devices via FCM (Firebase Cloud Messaging)
  * when recipients are offline or app is killed in the background.
  * Persists push tokens to database (BUG-12 fixed).
+ *
+ * NOTE (BUG-H): Google has transitioned to FCM HTTP v1 OAuth2 API.
+ * In development/sandbox mode without FCM_SERVER_KEY, notifications gracefully no-op.
+ * For production deployment, set FCM_SERVER_KEY or provide Google Service Account JSON for HTTP v1.
  */
 
 import { ArgusDatabase } from '../db/database';

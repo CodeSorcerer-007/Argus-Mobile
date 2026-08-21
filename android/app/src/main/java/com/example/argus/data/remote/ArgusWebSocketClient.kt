@@ -28,6 +28,8 @@ data class WireEncryptedPayload(
     val previousChainLength: Int,
     val ivBase64: String,
     val ciphertextBase64: String,
+    val senderIdentityPublicKeyBase64: String? = null,
+    val ephemeralPublicKeyBase64: String? = null,
     val mediaUrl: String? = null,
     val mediaType: String? = null,
     val mediaSize: Long? = null,

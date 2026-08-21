@@ -160,6 +160,7 @@ export class ArgusWebSocketManager {
       }
 
       case 'CALL_OFFER': {
+        if (!event.targetUserId || typeof event.targetUserId !== 'string') break;
         const caller = this.db.users.get(ws.userId);
         const targetSockets = this.userSockets.get(event.targetUserId);
         const isTargetOnline = targetSockets && targetSockets.size > 0;
@@ -186,6 +187,7 @@ export class ArgusWebSocketManager {
       }
 
       case 'CALL_ANSWER': {
+        if (!event.targetUserId || typeof event.targetUserId !== 'string') break;
         this.addPeerRelation(ws.userId, event.targetUserId);
         this.relayToUser(event.targetUserId, {
           type: 'CALL_ANSWERED',
@@ -196,6 +198,8 @@ export class ArgusWebSocketManager {
       }
 
       case 'ICE_CANDIDATE': {
+        if (!event.targetUserId || typeof event.targetUserId !== 'string') break;
+        this.addPeerRelation(ws.userId, event.targetUserId);
         this.relayToUser(event.targetUserId, {
           type: 'REMOTE_ICE_CANDIDATE',
           callId: event.callId,
@@ -206,6 +210,8 @@ export class ArgusWebSocketManager {
 
       case 'CALL_END':
       case 'CALL_REJECT': {
+        if (!event.targetUserId || typeof event.targetUserId !== 'string') break;
+        this.addPeerRelation(ws.userId, event.targetUserId);
         this.relayToUser(event.targetUserId, {
           type: 'CALL_TERMINATED',
           callId: event.callId,
@@ -217,17 +223,21 @@ export class ArgusWebSocketManager {
   }
 
   private handleSendMessage(senderWs: AuthenticatedSocket, payload: EncryptedMessagePayload): void {
-    if (!payload || !payload.id || !payload.recipientId) {
+    if (!payload || !payload.id || !payload.recipientId || !senderWs.userId) {
       return;
     }
-    const senderUser = senderWs.userId ? this.db.users.get(senderWs.userId) : undefined;
-    if (senderWs.userId && payload.recipientId) {
-      this.addPeerRelation(senderWs.userId, payload.recipientId);
-    }
+    const senderUser = this.db.users.get(senderWs.userId);
+    this.addPeerRelation(senderWs.userId, payload.recipientId);
 
-    // Check if recipient is a group
-    const group = this.db.groups.get(payload.recipientId) || this.db.groups.get(payload.conversationId);
-    if (group && senderWs.userId && group.members.includes(senderWs.userId)) {
+    // Enforce authenticated sender identity to prevent senderId spoofing (BUG-F fixed)
+    const sanitizedPayload: EncryptedMessagePayload = {
+      ...payload,
+      senderId: senderWs.userId
+    };
+
+    // Check if recipient is a group (BUG-G fixed: explicit recipientId lookup)
+    const group = this.db.groups.get(payload.recipientId);
+    if (group && group.members.includes(senderWs.userId)) {
       // Fan out message to all group members except sender
       group.members.forEach(memberId => {
         if (memberId === senderWs.userId) return;
@@ -238,17 +248,17 @@ export class ArgusWebSocketManager {
         if (memberSockets && memberSockets.size > 0) {
           memberSockets.forEach(sock => {
             if (sock.readyState === WebSocket.OPEN) {
-              this.send(sock, { type: 'NEW_MESSAGE', payload: { ...payload, status: 'DELIVERED' } });
+              this.send(sock, { type: 'NEW_MESSAGE', payload: { ...sanitizedPayload, status: 'DELIVERED' } });
               delivered = true;
             }
           });
         }
 
         if (!delivered) {
-          this.db.queueOfflineMessage(memberId, { ...payload, status: 'SENT' });
+          this.db.queueOfflineMessage(memberId, { ...sanitizedPayload, status: 'SENT' });
           notificationService.sendWakeup(memberId, {
             type: 'NEW_MESSAGE',
-            senderId: senderWs.userId || payload.senderId,
+            senderId: senderWs.userId!,
             senderName: senderUser?.displayName || 'Argus Contact',
             conversationId: payload.conversationId,
             messageId: payload.id
@@ -267,7 +277,7 @@ export class ArgusWebSocketManager {
       let delivered = false;
       recipientSockets.forEach(sock => {
         if (sock.readyState === WebSocket.OPEN) {
-          this.send(sock, { type: 'NEW_MESSAGE', payload: { ...payload, status: 'DELIVERED' } });
+          this.send(sock, { type: 'NEW_MESSAGE', payload: { ...sanitizedPayload, status: 'DELIVERED' } });
           delivered = true;
         }
       });
@@ -279,12 +289,12 @@ export class ArgusWebSocketManager {
     }
 
     // Recipient is offline: buffer in encrypted offline storage and dispatch FCM push wakeup
-    this.db.queueOfflineMessage(payload.recipientId, { ...payload, status: 'SENT' });
+    this.db.queueOfflineMessage(payload.recipientId, { ...sanitizedPayload, status: 'SENT' });
     this.send(senderWs, { type: 'MESSAGE_STATUS', messageId: payload.id, status: 'SENT' });
 
     notificationService.sendWakeup(payload.recipientId, {
       type: 'NEW_MESSAGE',
-      senderId: payload.senderId,
+      senderId: senderWs.userId,
       senderName: senderUser?.displayName || 'Argus Contact',
       conversationId: payload.conversationId,
       messageId: payload.id
@@ -304,7 +314,7 @@ export class ArgusWebSocketManager {
 
   private relayTyping(senderId: string, recipientId: string, conversationId: string, isTyping: boolean): void {
     // Check if recipient is a group
-    const group = this.db.groups.get(recipientId) || this.db.groups.get(conversationId);
+    const group = this.db.groups.get(recipientId);
     if (group && group.members.includes(senderId)) {
       group.members.forEach(memberId => {
         if (memberId !== senderId) {
@@ -314,7 +324,9 @@ export class ArgusWebSocketManager {
       return;
     }
 
-    this.relayTypingToSingleUser(senderId, recipientId, conversationId, isTyping);
+    if (recipientId) {
+      this.relayTypingToSingleUser(senderId, recipientId, conversationId, isTyping);
+    }
   }
 
   private relayTypingToSingleUser(senderId: string, targetUserId: string, conversationId: string, isTyping: boolean): void {

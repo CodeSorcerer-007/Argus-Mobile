@@ -86,9 +86,16 @@ fun ArgusNavGraph(
 
     val conversations by container.messageRepository.conversations.collectAsState()
     val messagesMap by container.messageRepository.messages.collectAsState()
+    val typingMap by container.messageRepository.typingState.collectAsState()
     val contacts by container.localStore.contactsFlow.collectAsState()
     val calls by container.callRepository.callHistory.collectAsState()
     val activeCallState by container.callRepository.activeCallFlow.collectAsState()
+
+    LaunchedEffect(activeCallState) {
+        if (activeCallState != null && currentScreen !is Screen.Call) {
+            currentScreen = Screen.Call
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize().background(ObsidianBlack)) {
         when (val screen = currentScreen) {
@@ -302,7 +309,15 @@ fun ArgusNavGraph(
                 BackHandler {
                     currentScreen = Screen.Main
                 }
-                val directPeerId = if (screen.conversationId.startsWith("conv_")) screen.conversationId.removePrefix("conv_") else null
+                val myUserId = container.preferences.loadCurrentUser()?.id ?: "me"
+                val rawId = screen.conversationId.removePrefix("conv_")
+                val parts = rawId.split("_")
+                val directPeerId = if (parts.size == 2) {
+                    if (parts[0] == myUserId) parts[1] else parts[0]
+                } else if (parts.size == 1 && rawId.isNotBlank()) {
+                    rawId
+                } else null
+
                 val matchedContact = if (directPeerId != null) contacts.firstOrNull { it.userId == directPeerId } else null
                 val conv = conversations.firstOrNull { it.id == screen.conversationId }
                     ?: matchedContact?.let {
@@ -315,11 +330,16 @@ fun ArgusNavGraph(
                     }
                     ?: Conversation(
                         id = screen.conversationId,
-                        title = "Secure Chat",
+                        title = matchedContact?.displayName ?: "Secure Chat",
                         participantIds = if (directPeerId != null) listOf(directPeerId) else emptyList()
                     )
                 val msgs = messagesMap[screen.conversationId] ?: emptyList()
-                val recipientId = conv.participantIds.firstOrNull() ?: directPeerId ?: "peer_1"
+                val recipientId = conv.participantIds.firstOrNull { it != myUserId } ?: directPeerId ?: "peer_1"
+
+                LaunchedEffect(screen.conversationId) {
+                    container.localStore.loadMessagesForConversation(screen.conversationId)
+                    container.messageRepository.markAsRead(screen.conversationId, recipientId)
+                }
 
                 ChatScreen(
                     conversation = conv,
@@ -381,6 +401,10 @@ fun ArgusNavGraph(
                     onReactionClick = { msg, emoji ->
                         container.messageRepository.addReaction(msg, emoji)
                     },
+                    isPeerTyping = typingMap[screen.conversationId] == true,
+                    onTyping = { isTyping ->
+                        container.messageRepository.sendTyping(recipientId, conv.id, isTyping)
+                    },
                     aiRepository = container.aiAssistantRepository
                 )
             }
@@ -418,6 +442,11 @@ fun ArgusNavGraph(
                         onSpeakerToggle = { container.callRepository.toggleSpeaker() },
                         onVideoToggle = { container.callRepository.toggleVideo() },
                         onCameraSwitch = { container.callRepository.toggleCamera() },
+                        onAcceptCall = { container.callRepository.acceptCall() },
+                        onRejectCall = {
+                            container.callRepository.rejectCall()
+                            currentScreen = Screen.Main
+                        },
                         onEndCall = { dur ->
                             container.callRepository.endCall(dur)
                             currentScreen = Screen.Main
