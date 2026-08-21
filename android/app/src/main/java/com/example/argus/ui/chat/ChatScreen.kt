@@ -61,7 +61,7 @@ import java.util.Date
 import java.util.Locale
 import kotlin.random.Random
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun ChatScreen(
     conversation: Conversation,
@@ -355,7 +355,18 @@ fun ChatScreen(
         )
     }
 
+    val isImeVisible = WindowInsets.isImeVisible
+    LaunchedEffect(isImeVisible) {
+        if (isImeVisible && messages.isNotEmpty()) {
+            listState.animateScrollToItem(messages.size - 1)
+        }
+    }
+
     Scaffold(
+        modifier = Modifier
+            .fillMaxSize()
+            .imePadding(),
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         containerColor = ChatWallpaperBg,
         topBar = {
             Surface(
